@@ -1500,10 +1500,6 @@ def main():
         st.markdown(
             f"<meta http-equiv='refresh' content='{AUTO_REFRESH_INTERVAL_SEC}'>",
             unsafe_allow_html=True)
-        st.caption(
-            "ℹ️ Auto-refresh is using a basic page reload. For smoother "
-            "refreshing that doesn't reset your scroll position, run: "
-            "`pip install streamlit-autorefresh`")
 
     defaults = {
         "last_paper_trade": datetime.now() - timedelta(seconds=PAPER_TRADE_INTERVAL),
@@ -1516,69 +1512,23 @@ def main():
     bankroll_cfg = load_bankroll_config()
 
     with st.expander("⚙️ Settings", expanded=False):
-        c1, c2, c3 = st.columns(3)
+        c1, c2 = st.columns(2)
         with c1:
             bankroll   = st.number_input("Bankroll (C$)", min_value=1.0,
                                           value=float(bankroll_cfg.get("starting_bankroll", 1500.0)), step=1.0)
+        with c2:
             risk_level = st.radio("Kelly Risk Level", ["Safe","Moderate","Aggressive"],
                                    index=["Safe","Moderate","Aggressive"].index(
                                        bankroll_cfg.get("kelly_fraction", "Moderate")))
-        with c2:
-            st.markdown(f"**All sports:** {'✅ Premium Odds API' if ODDS_API_KEY else '❌ ODDS_API_KEY missing'}")
-            st.caption("NBA · MLB · Tennis ATP · Tennis WTA — all via The Odds API Premium")
-        with c3:
-            rainbet_multiplier = st.number_input(
-                "Current Rainbet Multiplier (X)", min_value=1.01, max_value=50.0, value=1.90, step=0.05,
-                help="Enter the live decimal odds from Rainbet.")
-            st.caption("If Rainbet shows 1.85 on a game, enter 1.85 here.")
-        st.caption(
-            "📊 **Model calibration (static constants — not affected by JSON reset)**\n"
-            f"Edge threshold: {MIN_EDGE_THRESHOLD}% | MLB cap: {MLB_MAX_ODDS}x | "
-            f"Heavy-favorite floor: {HEAVY_FAVORITE_FLOOR}x, effective {EFFECTIVE_FAVORITE_FLOOR}x with drift buffer\n"
-            "Dead-zone discount: 65–70% band → ×0.88\n"
-            "Boosts: NBA 6% | MLB 3.5% | Tennis 5.5%"
-        )
 
-        st.divider()
-        st.markdown("**🤖 Live model_settings.json values** — *this is the file that resets to generic "
-                     "defaults on every redeploy; check this after any redeploy to confirm it wasn't silently wiped.*")
-        mcol1, mcol2, mcol3, mcol4 = st.columns(4)
-        with mcol1:
-            model_confidence = st.slider("Model Confidence", 0.5, 2.0,
-                                          float(model_cfg.get("model_confidence", 1.0)), 0.05,
-                                          help="1.0 = neutral. >1 amplifies the home-boost signal.")
-        with mcol2:
-            injury_penalty_pct = st.slider("Injury Penalty %", 1.0, 20.0,
-                                            float(model_cfg.get("injury_penalty_pct", 5.0)), 0.5,
-                                            help="Base probability reduction for a flagged team/player. "
-                                                 "Tennis solo-sport flags apply up to 1.5x this, hard-capped at 8pts.")
-        with mcol3:
-            edge_threshold_pct = st.slider("Edge Threshold %", 1.0, 10.0,
-                                            float(model_cfg.get("edge_threshold_pct", MIN_EDGE_THRESHOLD)), 0.5,
-                                            help="Minimum edge vs. bookmaker to flag a qualifying bet.")
-        with mcol4:
-            max_underdog_odds = st.slider("Max Underdog Odds (ceiling)", 1.50, 10.0,
-                                           float(model_cfg.get("max_underdog_odds", MAX_UNDERDOG_ODDS)), 0.10,
-                                           help="Fix 24: real graded results show win rate falls off a cliff "
-                                                "above 3.00x (14.3% vs 64-71% below it) — bets priced above this "
-                                                "are excluded entirely, not just de-weighted.")
-        save_col1, save_col2 = st.columns(2)
-        if save_col1.button("💾 Save model_settings.json", width="stretch"):
-            save_model_config({
-                "model_confidence": model_confidence,
-                "edge_threshold_pct": edge_threshold_pct,
-                "injury_penalty_pct": injury_penalty_pct,
-                "max_underdog_odds": max_underdog_odds,
-                "form_factor": model_cfg.get("form_factor", 0.5),
-                "odds_weight": model_cfg.get("odds_weight", 0.5),
-            })
-            st.cache_data.clear()
-            for key in ["data_nba","data_mlb","data_tennis","data_wnba","data_fetched_at"]:
-                st.session_state.pop(key, None)
-            st.success("✅ Saved and recomputing now. Note: this file resets to defaults on "
-                       "the NEXT redeploy — re-check after pushing any code change.")
-            st.rerun()
-        if save_col2.button("💾 Save bankroll_settings.json", width="stretch"):
+        # These stay fixed at their defaults unless changed here — the model/edge
+        # tuning controls were removed since they're not needed day to day.
+        model_confidence    = model_cfg.get("model_confidence", 1.0)
+        injury_penalty_pct  = model_cfg.get("injury_penalty_pct", 5.0)
+        edge_threshold_pct  = model_cfg.get("edge_threshold_pct", MIN_EDGE_THRESHOLD)
+        max_underdog_odds   = model_cfg.get("max_underdog_odds", MAX_UNDERDOG_ODDS)
+
+        if st.button("💾 Save", width="stretch"):
             save_bankroll_config({
                 "starting_bankroll": bankroll,
                 "min_stake": bankroll_cfg.get("min_stake", 10.0),
@@ -1589,7 +1539,7 @@ def main():
             st.cache_data.clear()
             for key in ["data_nba","data_mlb","data_tennis","data_wnba","data_fetched_at"]:
                 st.session_state.pop(key, None)
-            st.success("✅ Saved and recomputing now. Same redeploy-reset caveat applies.")
+            st.success("✅ Saved.")
             st.rerun()
 
     # ── Header ────────────────────────────────────────────────────────────────
