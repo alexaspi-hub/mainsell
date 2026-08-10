@@ -117,8 +117,9 @@ body { overscroll-behavior-y: none !important; overflow-x: hidden !important; }
 # =============================================================================
 PAPER_TRADE_INTERVAL = 1200
 MIN_EV_THRESHOLD     = 0.01
-MIN_EDGE_THRESHOLD   = 4.5         # Fix 3: raised from 0.5 — 85% WR at 4.5%+ empirically
-MLB_MAX_ODDS         = 1.90        # Fix 2: cap — 0% WR above this in sample data
+MIN_EDGE_THRESHOLD   = 2.5         # Loosened from 4.5 — was empirically 85% WR at 4.5%+, but with
+                                    # zero live bets qualifying this let nothing through at all.
+MLB_MAX_ODDS         = 2.10        # Loosened from 1.90 to allow a bit more room.
 KELLY_FRACTIONS      = {"Safe": 0.25, "Moderate": 0.50, "Aggressive": 0.75}
 MAX_KELLY_PCT        = 0.20
 CB_STAKE_MULTIPLIER  = 0.50
@@ -126,10 +127,10 @@ CB_STAKE_MULTIPLIER  = 0.50
 ALLOWED_BASKETBALL_MARKETS = {"h2h", "moneyline"}
 BLOCKED_BASKETBALL_MARKETS = {"1x2", "3way", "three_way", "regulation_time"}
 
-HEAVY_FAVORITE_FLOOR = 1.50
+HEAVY_FAVORITE_FLOOR = 1.30        # Loosened from 1.50 to let more (heavier) favorites qualify.
 
-LINE_DRIFT_BUFFER = 0.15
-EFFECTIVE_FAVORITE_FLOOR = HEAVY_FAVORITE_FLOOR + LINE_DRIFT_BUFFER   # 1.65
+LINE_DRIFT_BUFFER = 0.10           # Shrunk from 0.15 alongside the floor loosening above.
+EFFECTIVE_FAVORITE_FLOOR = HEAVY_FAVORITE_FLOOR + LINE_DRIFT_BUFFER   # 1.40
 
 MAX_UNDERDOG_ODDS = 3.00
 
