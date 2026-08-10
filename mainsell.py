@@ -123,75 +123,24 @@ KELLY_FRACTIONS      = {"Safe": 0.25, "Moderate": 0.50, "Aggressive": 0.75}
 MAX_KELLY_PCT        = 0.20
 CB_STAKE_MULTIPLIER  = 0.50
 
-# Fix 7: Market-type allowlist — TheOddsAPI Premium can return multiple market
-# types per event. "h2h" (a.k.a. "moneyline") settles on the FINAL result
-# including overtime/extra innings. "1x2" / "3way" settle on REGULATION TIME
-# ONLY (draw is a distinct, separate outcome) — a bet placed on that market
-# auto-loses whenever the game goes to overtime, even if your side wins outright.
-# This is a distinct market, not a data error, so it must be filtered at the
-# market level, not inferred from the odds shape.
 ALLOWED_BASKETBALL_MARKETS = {"h2h", "moneyline"}
 BLOCKED_BASKETBALL_MARKETS = {"1x2", "3way", "three_way", "regulation_time"}
 
-# Fix 6: Heavy-Favorite Trap — applied across ALL sports, not just MLB.
-# Below this decimal price, one unexpected loss can erase ~10 wins worth of edge;
-# risk:reward is too skewed to survive normal variance (esp. tennis early rounds).
-# Raised 1.30 -> 1.50 after slip review showed losses clustering at 1.28-1.41
-# (Golden State 1.28 L, Dallas 1.34 W, NY Liberty 1.34 L, Aces 1.41 L, 1.41 L)
-# — 1.30 was not conservative enough to price out that cluster.
 HEAVY_FAVORITE_FLOOR = 1.50
 
-# Fix 18: LINE-DRIFT SAFETY BUFFER. The floor above was being checked against
-# whatever price the dashboard fetched — cached up to 15 min, plus however
-# long between you seeing it and actually placing it on Rainbet. A price
-# that legitimately cleared 1.50 at fetch time can easily drift below it by
-# the time you act on it, especially in tennis where lines move fast close
-# to first serve (this is exactly how a 1.07 favorite made it through: the
-# dashboard's snapshot was a real >=1.50 price at the time, it just moved
-# before execution). This buffer requires bets to clear meaningfully more
-# than the bare minimum, so ordinary drift doesn't put you back in the
-# heavy-favorite danger zone by the time you actually stake it.
 LINE_DRIFT_BUFFER = 0.15
 EFFECTIVE_FAVORITE_FLOOR = HEAVY_FAVORITE_FLOOR + LINE_DRIFT_BUFFER   # 1.65
 
-# Fix 24: HEAVY-UNDERDOG CEILING. Real graded Rainbet results (59 bets,
-# Jul 10 - Aug 4) split by odds bucket:
-#   <2.00 odds:  64.5% win rate (n=31)
-#   2.00-3.00:   71.4% win rate (n=14)
-#   3.00+:       14.3% win rate (n=14)   <- cliff, not a gentle decline
-# The model's EV+ on long-shot picks was NOT translating into real wins —
-# consistent with a classic long-shot bias: a small absolute miscalibration
-# in win probability (e.g. modeling 12% when the true rate is closer to 6%)
-# still produces a "positive" EV+ on paper because the payout multiplier is
-# so large, while losing in reality almost every time. This caps how big an
-# underdog price the dashboard will ever recommend, mirroring the existing
-# heavy-favorite floor on the other end. Adjustable in Settings — this is a
-# starting point from n=14 in the losing bucket, not a precisely calibrated
-# number; revisit once more graded data exists above/below this line.
 MAX_UNDERDOG_ODDS = 3.00
 
-# Bounded, logged exception to the floor above — NOT a silent bypass. A bet
-# below the floor can still qualify, but only if edge is large enough that it
-# would survive being wrong ~1 time in 20, AND it's capped at 1 such bet/day
-# and half stake (see find_top_bets / calculate_stakes). Treat a bet that only
-# qualifies through this path as suspect calibration, not free money — the
-# model overestimating a short-priced favorite is the most common failure
-# mode for exactly this kind of bet.
 HEAVY_FAVORITE_EV_EXCEPTION_THRESHOLD = 0.05   # EV+ must exceed this to bypass floor
 
-# Fix 26: the exception above had NO lower bound on price at all — it only
-# checked EV+ > 5%, so a model claiming high EV+ on an extreme price (a 1.10x
-# actually got through) could bypass the floor entirely with no limit on how
-# far. A short-priced favorite is exactly where the model is most likely to
-# be overconfident. The exception is meant for "clears the floor by a little
-# less than usual, but with strong edge" — not "any price at all."
 EXCEPTION_MIN_ODDS = 1.35
 HEAVY_FAVORITE_EV_EXCEPTION_MAX_PER_DAY = 1
 
 MIN_COMPLETE_SETS_TENNIS = 2   # below this, treat result as retirement/walkover, not a "real" outcome
 
 
-# Fix 1 dead-zone constants: 65-70% AI prob band was 24pp overestimated in backtesting
 _DZ_LO       = 0.65
 _DZ_HI       = 0.70
 _DZ_DISCOUNT = 0.88   # shrinks 0.68 → 0.599 effective probability
@@ -209,9 +158,6 @@ MODEL_CONFIG     = Path("model_settings.json")
 BET_LEDGER_PATH  = Path("qualified_bets_ledger.json")
 FLOOR_EXCEPTION_LOG_PATH = Path("floor_exception_log.json")
 
-# Fix 13: how often the app re-fetches automatically, in seconds. Matches the
-# underlying @st.cache_data TTL on fetch_premium_odds (900s) — no point
-# refreshing the page more often than the odds cache itself updates.
 AUTO_REFRESH_INTERVAL_SEC = 900
 
 _AS_NBA    = "https://v1.basketball.api-sports.io"
@@ -252,10 +198,6 @@ def log_and_get_velocity(match_name: str, home_odds: float, away_odds: float) ->
 # =============================================================================
 import re as _re
 
-# Matches a squished trailing block like: "ET1.8415W107/106", "ET1.5415FORFEIT",
-# "ET1.815L2/6 6/3 3/6". Groups: timezone, odds (decimal), stake (int), outcome
-# letter (W/L), score (rest of string, possibly containing spaces/slashes), OR
-# a non-standard outcome word (FORFEIT, RETIRED, VOID, WALKOVER, CASHOUT).
 _RAW_LOG_RE = _re.compile(
     r"""^(?P<entity>.+?)\s*·\s*(?P<match>.+?)\s+
         (?P<date>\d{4}-\d{2}-\d{2})\s+
@@ -270,25 +212,6 @@ _RAW_LOG_RE = _re.compile(
 )
 
 def parse_raw_log_line(line: str, known_stake: float | None = None) -> dict | None:
-    """
-    Untangle one squished raw-log line into a clean record.
-
-    Handles the "data squishing" bug where timezone, odds, stake, outcome,
-    and score run together with no delimiters (e.g. 'ET1.8415W107/106'),
-    AND non-standard terminal states like 'ET1.5415FORFEIT' that have no
-    score at all.
-
-    IMPORTANT — irreducible ambiguity: odds are sometimes logged without a
-    trailing zero (e.g. '1.8' instead of '1.80'), which makes the odds/stake
-    boundary genuinely ambiguous from the digit string alone (e.g. '1.815L'
-    could be 1.81 odds + stake 5, OR 1.8 odds + stake 15). If you bet with a
-    flat stake (this log is flat-15 throughout), pass `known_stake` so the
-    parser can pick the split that matches your real staking plan instead of
-    guessing. Without it, the parser defaults to assuming 2-decimal odds.
-
-    Returns None if the line doesn't match the expected shape (caller should
-    log/skip rather than crash the whole batch).
-    """
     if not line or not line.strip():
         return None
     m = _RAW_LOG_RE.match(line.strip())
@@ -314,11 +237,8 @@ def parse_raw_log_line(line: str, known_stake: float | None = None) -> dict | No
 
     low_confidence = False
     if known_stake is not None and stake is not None and stake != known_stake:
-        # The 2-decimal-odds split didn't match your known flat stake — try
-        # shifting one digit from odds to stake (covers '1.8' logged as '1.815...').
-        combo = f"{g['odds']}{g['stake']}"  # re-fuse the raw digit run, e.g. "1.815"
+        combo = f"{g['odds']}{g['stake']}"
         digits_before_dot, digits_after_dot = combo.split(".")
-        # try every odds-length split and pick the one matching known_stake
         found = False
         for cut in range(1, len(digits_after_dot)):
             cand_odds_str  = f"{digits_before_dot}.{digits_after_dot[:cut]}"
@@ -338,19 +258,14 @@ def parse_raw_log_line(line: str, known_stake: float | None = None) -> dict | No
         "tz":        g["tz"],
         "odds":      odds,
         "stake":     stake,
-        "outcome":   outcome,           # "W" / "L" / "FORFEIT" / "RETIRED" / ...
-        "score":     score,             # e.g. "107/106", "6/1 6/3", or None
-        "low_confidence_split": low_confidence,  # True = odds/stake boundary was ambiguous
+        "outcome":   outcome,
+        "score":     score,
+        "low_confidence_split": low_confidence,
         "raw_line":  line.strip(),
     }
 
 
 def parse_raw_log_batch(lines: list[str], known_stake: float | None = None) -> pd.DataFrame:
-    """Parse many raw log lines; rows that fail to parse are kept with a
-    '_parse_failed' flag instead of being silently dropped, so you can see
-    exactly which lines need a format tweak rather than losing data.
-    Pass known_stake (e.g. 15.0 for a flat-stake bettor) to correctly resolve
-    the odds/stake boundary on lines where odds lack a trailing zero."""
     records = []
     for ln in lines:
         rec = parse_raw_log_line(ln, known_stake=known_stake)
@@ -365,21 +280,11 @@ def parse_raw_log_batch(lines: list[str], known_stake: float | None = None) -> p
 _TENNIS_LAST_FIRST_RE = _re.compile(r"^\s*(?P<last>[^,]+?)\s*,\s*(?P<first>[^,]+?)\s*$")
 
 def normalize_tennis_name(name: str) -> str:
-    """
-    Fix 9: TheOddsAPI / Rainbet tennis feeds report names as 'Last, First'
-    (e.g. 'Muchova, Karolina'); backtesting logs and most display contexts
-    use 'First Last'. Converts the former to the latter. Names that don't
-    match the 'Last, First' shape (no comma, or already 'First Last', or a
-    multi-part name with extra commas/suffixes) are returned unchanged rather
-    than mangled, since guessing wrong is worse than leaving it alone.
-    """
     if not name or not isinstance(name, str):
         return name
     s = name.strip()
     if "," not in s:
         return s
-    # Only handle the simple single-comma "Last, First" case; anything with
-    # more than one comma (suffixes, multi-part names) is ambiguous — leave as-is.
     if s.count(",") != 1:
         return s
     m = _TENNIS_LAST_FIRST_RE.match(s)
@@ -392,9 +297,6 @@ def normalize_tennis_name(name: str) -> str:
 
 
 def normalize_tennis_names_in_text(text: str) -> str:
-    """Apply normalize_tennis_name to every 'Last, First' occurrence inside a
-    larger string (e.g. a full slip line 'Muchova, Karolina vs Gauff, Coco'),
-    without needing the names pre-split. Splits on ' vs ' when present."""
     if not text or not isinstance(text, str):
         return text
     if " vs " in text:
@@ -404,22 +306,12 @@ def normalize_tennis_names_in_text(text: str) -> str:
 
 
 def _normalize_player_key(match_str: str) -> str:
-    """Order-independent key for 'A vs B' so 'A vs B' and 'B vs A' collide."""
     parts = [p.strip().lower() for p in _re.split(r"\s+vs\s+", str(match_str))]
     return "|".join(sorted(parts))
 
 
 def dedupe_match_logs(df: pd.DataFrame, date_col: str = "date",
                        match_col: str = "match") -> pd.DataFrame:
-    """
-    Fix: Rain-Delay / Duplicate Logging Bug.
-
-    When a suspended match gets re-logged under a later timestamp, the same
-    fixture appears twice with different dates. This keeps only ONE row per
-    fixture: the row with the LATEST date/time AND a fully-graded outcome
-    (real W/L with a complete score), preferring that over an earlier
-    in-progress/void/forfeit snapshot of the same match.
-    """
     if df is None or df.empty:
         return df
     work = df.copy()
@@ -432,9 +324,6 @@ def dedupe_match_logs(df: pd.DataFrame, date_col: str = "date",
     work["_is_final"] = work.apply(_is_final, axis=1)
     work["_sort_dt"]  = pd.to_datetime(work.get(date_col), errors="coerce")
 
-    # Prefer: final outcome first, then most recent date — so a later FORFEIT
-    # snapshot doesn't get kept over an earlier completed result, and a final
-    # result always wins over an unresolved/void duplicate either direction.
     work = work.sort_values(["_pkey", "_is_final", "_sort_dt"],
                              ascending=[True, False, False])
     deduped = work.drop_duplicates(subset="_pkey", keep="first")
@@ -442,7 +331,6 @@ def dedupe_match_logs(df: pd.DataFrame, date_col: str = "date",
 
 
 def _count_completed_sets(score: str | None) -> int:
-    """Count finished sets in a tennis score string like '6/4 7/6' or '6/7 4/6'."""
     if not score:
         return 0
     sets = [s for s in str(score).split() if "/" in s]
@@ -452,23 +340,6 @@ def _count_completed_sets(score: str | None) -> int:
 def grade_with_sportsbook_rules(outcome: str, score: str | None,
                                  sport: str = "Tennis",
                                  grading_rule: str = "1st_set") -> dict:
-    """
-    Apply ACTUAL sportsbook grading rules instead of "ideal" outcomes.
-
-    Rainbet (and similarly-ruled books) grade retirements/walkovers using a
-    1st-ball or 1st-set action rule: if action started (or the 1st set
-    finished) before the retirement, the bet still grades as a normal
-    W/L on whoever was leading at that point — it is NOT voided.
-
-    Args:
-        outcome:      raw outcome token ("W","L","FORFEIT","RETIRED","WALKOVER","VOID")
-        score:        score string, e.g. "0:0", "1:0", "6/4 3/1" (retired mid-set)
-        sport:        sport label (only Tennis has set-based grading here)
-        grading_rule: "1st_set" (must complete 1 full set to count) or
-                      "1st_ball" (any action at all counts, even 0:0/1:0)
-
-    Returns dict: {"graded_outcome": "W"/"L"/"VOID", "is_void": bool, "note": str}
-    """
     outcome_u = (outcome or "").upper()
     sets_done = _count_completed_sets(score)
 
@@ -480,12 +351,10 @@ def grade_with_sportsbook_rules(outcome: str, score: str | None,
             return {"graded_outcome": "VOID", "is_void": True, "note": "Non-tennis retirement — treat as void by default."}
 
         if grading_rule == "1st_ball":
-            # Rainbet-style: any action counted as a result, even 0:0/1:0 pre-match retirements.
             return {"graded_outcome": "W", "is_void": False,
                     "note": "1st-ball rule: book graded this as a live result despite early retirement; "
                             "do not void in backtest — it cost/won real money."}
 
-        # "1st_set" rule: needs >=1 completed set to be a graded result, not a void.
         if sets_done >= 1:
             return {"graded_outcome": "W", "is_void": False,
                     "note": f"{sets_done} set(s) completed before retirement — books grade this live, not void."}
@@ -498,8 +367,6 @@ def grade_with_sportsbook_rules(outcome: str, score: str | None,
 def apply_sportsbook_grading(df: pd.DataFrame, outcome_col: str = "outcome",
                               score_col: str = "score", sport_col: str = "sport",
                               grading_rule: str = "1st_set") -> pd.DataFrame:
-    """Vectorized application of grade_with_sportsbook_rules across a trade log,
-    so backtests reflect what Rainbet actually paid/took, not the 'ideal' result."""
     if df is None or df.empty:
         return df
     out = df.copy()
@@ -528,28 +395,9 @@ def american_to_decimal(american: float) -> float:
     if american > 0: return american / 100 + 1
     return 100 / abs(american) + 1
 
-# Fix 19: RAINBET PRICING HAIRCUT. The API polls major books (FanDuel,
-# DraftKings, BetMGM, etc.) — Rainbet has never once appeared in the polled
-# book list across every debug dump seen so far. The dashboard was showing
-# best-of-market across those OTHER books, but you can only actually bet on
-# Rainbet, which prices consistently worse. Real side-by-side examples:
-#   Tabilo/Shelton:    dash 3.95 -> Rainbet 3.45  (12.7% worse)
-#   Jodar/Musetti:     dash 1.54 -> Rainbet 1.51  ( 1.9% worse)
-#   Portland Fire:     dash 3.75 -> Rainbet 3.60  ( 4.0% worse)
-#   Washington Mystics:dash 2.40 -> Rainbet 2.26  ( 5.8% worse)
-# All four moved the SAME direction (Rainbet always shorter) including two
-# bets checked in the same batch/session — ruling out simple time-drift as
-# the sole explanation. This is a rough correction from only 4 samples, not
-# a precise calibration — it should be refined as more real examples come
-# in. It leans slightly conservative (above the ~6% sample average) since
-# the cost of under-correcting (false-positive edge that isn't really there
-# on Rainbet) is worse than over-correcting (skipping a few real edges).
 RAINBET_PRICING_HAIRCUT = 0.08
 
 def apply_rainbet_haircut(decimal_odds: float) -> float:
-    """Shaves the 'profit portion' of a decimal price proportionally, which
-    mirrors how bookmaker margin actually works (unlike a flat subtraction,
-    this can never push odds below 1.0 even on very short favorites)."""
     if decimal_odds is None or decimal_odds <= 1.0:
         return decimal_odds
     profit = decimal_odds - 1.0
@@ -612,14 +460,6 @@ def fetch_premium_odds(sport_key: str) -> pd.DataFrame:
             home_raw  = ev.get("home_team", "")
             away_raw  = ev.get("away_team", "")
             if sport_label == "Tennis":
-                # Fix 9: API returns tennis names as "Last, First" — normalize
-                # to "First Last" so Match strings line up with backtesting logs.
-                # IMPORTANT: keep home_raw/away_raw for matching against
-                # outcome.name below, since the API's outcomes[].name field
-                # still comes back as "Last, First" — matching against the
-                # normalized name here silently zeroed out every tennis odds
-                # lookup (best_h/best_a stayed 0.0, so every event got dropped
-                # by the best_h<=1 filter and the tab showed "no matches").
                 home = normalize_tennis_name(home_raw)
                 away = normalize_tennis_name(away_raw)
             else:
@@ -638,8 +478,6 @@ def fetch_premium_odds(sport_key: str) -> pd.DataFrame:
             for bk in (ev.get("books") or []):
                 mkt = (bk.get("market") or "").strip().lower()
                 if mkt in BLOCKED_BASKETBALL_MARKETS:
-                    # Explicit reject, not just "not h2h" — this is a regulation-time-only
-                    # market that would auto-lose on any game that goes to overtime.
                     blocked_market_hit = True
                     continue
                 if mkt not in ALLOWED_BASKETBALL_MARKETS and mkt != "h2h":
@@ -666,18 +504,9 @@ def fetch_premium_odds(sport_key: str) -> pd.DataFrame:
                 if not (0.90 <= imp_sum <= 1.25):
                     skipped_imp += 1; continue
 
-            # Fix 19: haircut the validated best-of-market price down toward a
-            # realistic Rainbet-equivalent BEFORE it flows into EV/floor/stake
-            # calculations, so those numbers reflect what you can actually get,
-            # not a price from a book you can't bet on. Sanity check above runs
-            # on the raw price first, since the haircut shouldn't mask genuinely
-            # corrupted odds data.
             best_h = apply_rainbet_haircut(best_h)
             best_a = apply_rainbet_haircut(best_a)
 
-            # event_id is the stable identity from the API — fall back to a
-            # name-based key only if the API omits it, so dedupe/velocity
-            # tracking doesn't silently break on a missing field.
             velocity_key = event_id or f"{home} vs {away}"
 
             rows.append({
@@ -719,7 +548,6 @@ def calculate_real_ev(df: pd.DataFrame, model_cfg: dict, sport: str = "NBA") -> 
     confidence = float(model_cfg.get("model_confidence", 1.0))
     injury_pen = float(model_cfg.get("injury_penalty_pct", 5.0)) / 100
 
-    # Fix 4: sport-specific boosts — MLB halved to stop flat boost overvaluing dogs
     home_boost = {"NBA": 0.060, "MLB": 0.035, "Tennis": 0.055}.get(sport, 0.060)
 
     h_col = "Home Odds" if "Home Odds" in df.columns else "P1 Odds"
@@ -744,27 +572,7 @@ def calculate_real_ev(df: pd.DataFrame, model_cfg: dict, sport: str = "NBA") -> 
 
         model_h = fair_h + home_boost
 
-        # Fix 17: injury/risk penalty now reads the side-specific risk fields
-        # set by apply_injury_flags (_home_injury_risk / _away_injury_risk),
-        # falling back to the old flat "Risk Meter" if those aren't present
-        # (e.g. rows that never went through apply_injury_flags). The penalty
-        # is applied to the FLAGGED side's own probability, not always home —
-        # and >=90 (solo-sport flag) hits harder than >=65 (team-sport flag),
-        # reflecting that one hurt tennis player usually decides the match
-        # while one hurt bench player is diluted across a roster.
-        #
-        # Fix 22: the >=90 multiplier was 3.0x, which at the default 5%
-        # injury_penalty_pct means a SINGLE ESPN RSS headline that fuzzy-
-        # matches a player's last name could swing model_h by 15 points on
-        # a coarse keyword-substring match (apply_injury_flags' own docstring
-        # admits this "can false-flag on an unrelated headline sharing a
-        # word"). Tennis is exactly where the losing streak concentrated
-        # right after this went live. Reduced to 1.5x, AND hard-capped at 8
-        # points absolute regardless of what injury_penalty_pct is set to —
-        # so even if someone raises the base penalty later via Settings, one
-        # noisy headline can no longer single-handedly flip a close match's
-        # recommended side.
-        _MAX_INJURY_SWING = 0.08   # hard ceiling, independent of injury_pen setting
+        _MAX_INJURY_SWING = 0.08
         def _risk_penalty(risk: int) -> float:
             if risk >= 90: pct = injury_pen * 1.5
             elif risk >= 65: pct = injury_pen
@@ -775,39 +583,25 @@ def calculate_real_ev(df: pd.DataFrame, model_cfg: dict, sport: str = "NBA") -> 
         if "_home_injury_risk" in row.index or "_away_injury_risk" in row.index:
             home_risk = int(row.get("_home_injury_risk", 30) or 30)
             away_risk = int(row.get("_away_injury_risk", 30) or 30)
-            model_h -= _risk_penalty(home_risk)     # home team's own player flagged -> hurts home
-            model_h += _risk_penalty(away_risk)     # away team's player flagged -> helps home relatively
+            model_h -= _risk_penalty(home_risk)
+            model_h += _risk_penalty(away_risk)
         else:
             risk = int(row.get("Risk Meter", 30))
             if risk >= 65:   model_h -= injury_pen
             elif risk >= 35: model_h -= injury_pen * 0.5
 
-        # Confidence blend
         model_h = fair_h + (model_h - fair_h) * confidence
         model_h = max(0.02, min(0.98, model_h))
 
-        # Fix 1: dead-zone calibration discount — 65-70% band overestimates by 24pp in sample
         if _DZ_LO <= model_h < _DZ_HI:
             model_h *= _DZ_DISCOUNT
 
-        # Fix 5: MLB cliff-edge SP/bullpen penalty — danger zone where SP quality dominates
         if sport == "MLB" and 1.85 <= h_odds <= 2.10:
             model_h -= 0.04
 
         model_h = max(0.02, min(0.98, model_h))
-        model_a = 1.0 - model_h   # binary market (no draw) — away is the complement
+        model_a = 1.0 - model_h
 
-        # Fix 10: BOTH-SIDES EVALUATION. The model previously only ever priced
-        # the home side (model_h vs h_odds), but downstream code (heavy-favorite
-        # floor check, and the "BET ON: X" display) assumed whichever side was
-        # CHEAPER was the recommended bet. Those two things silently disagreed
-        # whenever the away team was the favorite: the floor filter tested the
-        # away price, while EV+/Edge%/Stake were computed for the home side —
-        # and if away "won" the display pick, the numbers shown next to it
-        # weren't actually its numbers at all. Evaluate both sides for real and
-        # pick whichever has the genuinely better edge; every downstream
-        # consumer (floor filter, stake sizing, UI) now reads *_bet_side_*
-        # fields instead of re-deriving a side from a raw odds comparison.
         ev_h   = model_h * (h_odds - 1) - (1.0 - model_h)
         ev_a   = model_a * (a_odds - 1) - (1.0 - model_a)
         edge_h = (model_h - imp_h) * 100
@@ -847,23 +641,9 @@ def calculate_real_ev(df: pd.DataFrame, model_cfg: dict, sport: str = "NBA") -> 
 # =============================================================================
 def calculate_stakes(df: pd.DataFrame, bankroll: float, risk_level: str,
                       max_stake_cap: float | None = None) -> pd.DataFrame:
-    """
-    Fix 8: max_stake_cap is the hard dollar ceiling from bankroll_settings.json
-    ("Max Stake (C$)"). Previously this setting was saved/displayed but never
-    actually applied here — only the Kelly *percentage* was capped (5%), so on
-    a large bankroll the dollar stake could still exceed what the user
-    configured as their max. Now the dollar figure itself is clamped, after
-    all other sizing (Kelly fraction, covariance shield, floor-exception
-    halving) is applied. Pass None to skip the cap (falls back to pct-only
-    behavior for backward compatibility).
-    """
     if df is None or df.empty:
         return df
     df = df.copy()
-    # Fix 10 follow-through: stake sizing must be based on the side actually
-    # being bet (df["Bet Odds"], set in calculate_real_ev), not always the
-    # home price — otherwise Kelly sizing silently uses the wrong team's odds
-    # whenever away was the recommended side.
     price_col = "Bet Odds" if "Bet Odds" in df.columns else ("Home Odds" if "Home Odds" in df.columns else "P1 Odds")
 
     ev_vals = pd.to_numeric(df.get("EV+"), errors="coerce").fillna(0)
@@ -889,8 +669,6 @@ def calculate_stakes(df: pd.DataFrame, bankroll: float, risk_level: str,
             final_pct   = min(fractional_kelly, 0.05)
             final_stake = final_pct * bankroll * CB_STAKE_MULTIPLIER
 
-            # Fix 2 follow-through: a bet that only qualified via the heavy-favorite
-            # floor exception rides at half stake, same rule as the Underdog tab.
             if bool(row.get("_floor_exception", False)):
                 final_stake *= 0.5
 
@@ -906,21 +684,8 @@ def calculate_stakes(df: pd.DataFrame, bankroll: float, risk_level: str,
 
 
 def compare_straight_vs_parlay(legs: list[dict], bankroll: float, risk_level: str = "Moderate") -> dict:
-    """
-    Quantifies why straight (single-game) Kelly bets beat the same legs combined
-    into a parlay/combo bet — the leak flagged in the Rainbet slips.
-
-    Args:
-        legs: list of {"prob": true_win_probability (0-1), "odds": decimal_odds} per leg.
-        bankroll, risk_level: same semantics as calculate_stakes.
-
-    Returns a dict comparing: total stake risked, expected profit, and variance
-    for (a) staking each leg straight with fractional Kelly vs (b) combining all
-    legs into one parlay at the product odds/probability.
-    """
     frac = KELLY_FRACTIONS.get(risk_level, 0.5)
 
-    # --- Straight bets: independent fractional-Kelly stake per leg ---
     straight_stake_total = 0.0
     straight_ev_total     = 0.0
     straight_var_total    = 0.0
@@ -933,12 +698,11 @@ def compare_straight_vs_parlay(legs: list[dict], bankroll: float, risk_level: st
         kelly_pct = min((edge / b) * frac, 0.05)
         stake = kelly_pct * bankroll
         ev    = stake * edge
-        var   = (stake ** 2) * p * (1 - p) * (b + 1) ** 2  # win/loss payoff variance
+        var   = (stake ** 2) * p * (1 - p) * (b + 1) ** 2
         straight_stake_total += stake
         straight_ev_total    += ev
-        straight_var_total   += var  # independent legs → variances add
+        straight_var_total   += var
 
-    # --- Parlay: all legs must hit; odds multiply, probability multiplies ---
     parlay_prob = 1.0
     parlay_odds = 1.0
     for leg in legs:
@@ -1002,20 +766,6 @@ def build_advance_predictions(days_ahead: int, sport: str,
 # BET FINDERS
 # =============================================================================
 def diagnose_qualification_funnel(df: pd.DataFrame, sport_name: str, hours: int = 24) -> dict:
-    """
-    Fix 27: find_top_bets' filtering stages (time window, floor, ceiling,
-    edge threshold) only ever printed their reasoning to server-side logs via
-    print([DEBUG] ...) — logs a Streamlit Cloud user generally can't see from
-    the app itself. That meant "why is Top Bets empty right now" was
-    genuinely unanswerable from the UI alone; you had to take it on faith
-    that the filtering was working correctly rather than being able to check.
-
-    Read-only mirror of find_top_bets' filter stages, for display purposes
-    only — does not affect what actually gets recommended. Returns a stage-
-    by-stage count so a genuinely empty result (e.g. no game currently prices
-    between the floor and ceiling with enough edge) is visibly distinguishable
-    from a bug that's silently zeroing everything out.
-    """
     stages = {"total": 0, "in_24h_window": 0, "after_mlb_cap": 0, "above_floor": 0,
               "below_ceiling": 0, "meets_edge_threshold": 0, "closest_miss": None}
     if df is None or df.empty:
@@ -1081,9 +831,6 @@ def find_best_bet(*dfs) -> pd.Series | None:
 
 
 def find_top_bets(*dfs, n: int = 8, per_sport_cap: int = 3, hours: int = 48) -> list:
-    """
-    Fix 2 applied here: MLB rows with Home Odds > MLB_MAX_ODDS are excluded before ranking.
-    """
     SPORT_CAPS = {"MLB": 2, "NBA": per_sport_cap, "Tennis": per_sport_cap}
     now_est    = datetime.now(_TZ_EASTERN)
     cutoff_est = now_est + timedelta(hours=hours)
@@ -1104,25 +851,12 @@ def find_top_bets(*dfs, n: int = 8, per_sport_cap: int = 3, hours: int = 48) -> 
             df = df[df["_start_iso"].apply(_in_window)].copy()
         if df.empty: continue
 
-        # Fix 2: MLB odds cap — exclude heavy dogs (0% WR above 1.90 in sample)
-        # Fix 10: check the side actually being bet, not always Home Odds.
         sport_name = df["_sport"].iloc[0] if "_sport" in df.columns else "?"
         if sport_name == "MLB":
             price_col = "Bet Odds" if "Bet Odds" in df.columns else ("Home Odds" if "Home Odds" in df.columns else "P1 Odds")
             df = df[pd.to_numeric(df[price_col], errors="coerce").fillna(99) <= MLB_MAX_ODDS].copy()
         if df.empty: continue
 
-        # Fix 6: Heavy-Favorite Trap — exclude prices below HEAVY_FAVORITE_FLOOR for
-        # ALL sports (not just MLB).
-        # Fix 10: this now floors the price of the side actually being bet
-        # (df["Bet Odds"], from calculate_real_ev) — NOT min(home,away). The old
-        # version tested whichever side happened to be cheaper, which frequently
-        # wasn't the side the model's EV+/Edge% were even computed for (e.g. an
-        # away favorite at 1.35 would kill the whole game even when the model's
-        # real recommendation was a home underdog at 3.20 with genuine edge).
-        # At 1.09–1.25 on the side you're ACTUALLY staking, you risk far more
-        # than you can win; one unexpected upset erases ~10 winning bets' worth
-        # of edge — but that only applies to the price you're really betting.
         if "Bet Odds" in df.columns:
             bet_price = pd.to_numeric(df["Bet Odds"], errors="coerce").fillna(0)
         else:
@@ -1135,12 +869,6 @@ def find_top_bets(*dfs, n: int = 8, per_sport_cap: int = 3, hours: int = 48) -> 
 
         above_floor = df[bet_price >= EFFECTIVE_FAVORITE_FLOOR].copy()
 
-        # Fix 24: hard ceiling on underdog price — real graded results show a
-        # cliff at 3.00+ (14.3% win rate vs 64-71% below it), not a gentle
-        # decline, so this excludes those picks entirely rather than just
-        # de-weighting them. Read from model_settings.json each call (not
-        # threaded through the function signature) so the Settings panel's
-        # slider takes effect immediately without touching every call site.
         max_dog_odds = float(load_model_config().get("max_underdog_odds", MAX_UNDERDOG_ODDS))
         over_ceiling_count = int((bet_price > max_dog_odds).sum())
         if over_ceiling_count:
@@ -1148,8 +876,6 @@ def find_top_bets(*dfs, n: int = 8, per_sport_cap: int = 3, hours: int = 48) -> 
                   f"odds above underdog ceiling ({max_dog_odds:.2f}x)")
         above_floor = above_floor[bet_price.loc[above_floor.index] <= max_dog_odds].copy()
 
-        # Fix 16: exception admission is now tracked persistently across app
-        # checks (see apply_floor_exception), not recalculated blind each call.
         below_floor = df[bet_price < EFFECTIVE_FAVORITE_FLOOR].copy()
         exception_pool = apply_floor_exception(below_floor, sport_name)
         if exception_pool is not None and not exception_pool.empty:
@@ -1183,14 +909,6 @@ def find_top_bets(*dfs, n: int = 8, per_sport_cap: int = 3, hours: int = 48) -> 
 
 
 def find_underdog_bets(*dfs, min_odds: float = 2.5, max_picks: int = 2) -> list:
-    """
-    Fix 10: previously picked whichever of home/away had the higher price and
-    filtered on df["EV+"] > 0 — but EV+ was computed for the home side only,
-    so a game could get flagged as an "underdog play" on the away team's price
-    while the EV+/edge shown was actually the home side's math. Now uses
-    df["Bet Odds"]/df["Bet Team"] directly (set in calculate_real_ev), so the
-    underdog price and the EV+ number are guaranteed to be about the same side.
-    """
     frames = [df for df in dfs if df is not None and not df.empty]
     if not frames: return []
     all_df = pd.concat(frames, ignore_index=True).dropna(subset=["EV+","Edge %"])
@@ -1239,7 +957,6 @@ def execute_paper_trade(*dfs) -> tuple[bool, str]:
     trades = load_paper_trades()
     logged = []
     for best in top3:
-        # Fix 10 follow-through: log the side actually being bet, not always home.
         bet_odds_v = best.get("Bet Odds")
         if bet_odds_v not in (None, ""):
             logged_odds = bet_odds_v
@@ -1250,10 +967,6 @@ def execute_paper_trade(*dfs) -> tuple[bool, str]:
             "id":           f"{best.get('Match','?')}_{datetime.now().strftime('%H%M%S')}",
             "timestamp":    datetime.now().isoformat(),
             "match":        best.get("Match", "Unknown"),
-            # Fix 25: the log previously stored the Match string ("A vs B") but
-            # never which side was actually recommended, so the Grade Picks
-            # panel could only show the matchup, not the pick — no way to know
-            # which team to check the result for without opening the debug log.
             "bet_team":     best.get("Bet Team", "") or "",
             "sport":        best.get("_sport", ""),
             "odds":         logged_odds,
@@ -1271,20 +984,6 @@ def execute_paper_trade(*dfs) -> tuple[bool, str]:
     return True, f"✅ Logged {len(logged)} trade(s): " + " | ".join(logged)
 
 def grade_trade_manually(trade_id: str, result: str) -> bool:
-    """
-    Fix 21: REAL OUTCOME GRADING. settle_pending_trades() previously "graded"
-    every pending pick with a random.random() coin-flip weighted by the
-    model's OWN predicted probability — meaning the "Recommendation Log" was
-    never actually measuring whether picks won or lost, it was just measuring
-    whether Python's RNG agreed with the model about itself. That number was
-    guaranteed to drift toward the model's self-assessment no matter how bad
-    the model actually was, and could never surface a real problem.
-
-    This replaces it: result is entered by hand from the actual Rainbet slip
-    (WIN / LOSS / PUSH / VOID), keyed by the trade's stable id. Only trades
-    matching trade_id are touched. Returns True if a matching PENDING (or
-    already-graded, re-gradable) row was found and updated.
-    """
     result = (result or "").upper().strip()
     if result not in ("WIN", "LOSS", "PUSH", "VOID"):
         return False
@@ -1313,9 +1012,6 @@ def calculate_success_rate() -> dict:
             "success_rate": round(wins / total * 100, 1) if total else 0.0}
 
 def calculate_success_rate_by_group(group_col: str) -> pd.DataFrame:
-    """Win rate broken out by sport, strategy, or any other logged column —
-    lets you see e.g. 'Tennis underdog picks are the leak' instead of one
-    blended number that hides which bet type is actually losing."""
     trades = load_paper_trades()
     if not trades:
         return pd.DataFrame()
@@ -1349,27 +1045,12 @@ def save_exception_log(log: dict) -> None:
         print(f"[save_exception_log] ERROR: {e}")
 
 def apply_floor_exception(below_floor: pd.DataFrame, sport_name: str) -> pd.DataFrame | None:
-    """
-    Fix 16: the "1 exception per day" cap was being recalculated from
-    scratch on every single find_top_bets() call, with no memory of which
-    bet (if any) had already used that slot. Combined with the sticky bet
-    ledger, that meant a DIFFERENT below-floor bet could win the "exception"
-    on a later refresh and get added ALONGSIDE the earlier one instead of
-    replacing it — so the daily cap of 1 could silently become 3 or 4 over
-    the course of a day of checks. This now persists which event(s) have
-    actually used the slot, per sport, per calendar day, to a small file —
-    so re-checking the app never grants a second exception, and an
-    already-admitted exception keeps being recognized (not re-evaluated
-    against the cap) as long as it's the SAME event.
-    """
     if below_floor is None or below_floor.empty:
         return None
     ev_below = pd.to_numeric(below_floor.get("EV+"), errors="coerce")
     price_col = "Bet Odds" if "Bet Odds" in below_floor.columns else (
         "Home Odds" if "Home Odds" in below_floor.columns else "P1 Odds")
     price_below = pd.to_numeric(below_floor.get(price_col), errors="coerce")
-    # Fix 26: hard absolute floor on the exception path itself — EV+ alone is
-    # no longer sufficient to bypass the floor at any price.
     candidates = below_floor[(ev_below > HEAVY_FAVORITE_EV_EXCEPTION_THRESHOLD) &
                               (price_below >= EXCEPTION_MIN_ODDS)].copy()
     if candidates.empty:
@@ -1378,7 +1059,6 @@ def apply_floor_exception(below_floor: pd.DataFrame, sport_name: str) -> pd.Data
 
     log = load_exception_log()
     today_str = datetime.now().strftime("%Y-%m-%d")
-    # Keep only today's entries so the file doesn't grow forever
     log = {today_str: log.get(today_str, {})}
     used_today = set(log[today_str].get(sport_name, []))
 
@@ -1388,12 +1068,11 @@ def apply_floor_exception(below_floor: pd.DataFrame, sport_name: str) -> pd.Data
         if not eid:
             continue
         if eid in used_today:
-            admitted.append(row)   # already-used exception -- keep recognizing it, not a new grant
+            admitted.append(row)
             continue
         if len(used_today) < HEAVY_FAVORITE_EV_EXCEPTION_MAX_PER_DAY:
             admitted.append(row)
             used_today.add(eid)
-        # else: today's cap for this sport is spent -- do not admit a new one
 
     log[today_str][sport_name] = sorted(used_today)
     save_exception_log(log)
@@ -1416,19 +1095,6 @@ def save_bet_ledger(ledger: dict) -> None:
         print(f"[save_bet_ledger] ERROR: {e}")
 
 def update_bet_ledger(qualifying_bets: list, all_known_keys: set) -> dict:
-    """
-    Fix 14: without this, the Top Bets list is recomputed from nothing on
-    every single refresh cycle — a bet that qualified a moment ago can vanish
-    on the very next refresh just because its edge dipped a fraction of a
-    percent, even though nothing meaningful actually changed. That "appears
-    then disappears" flicker is exactly what was reported.
-
-    This makes qualification STICKY: once a bet clears the bar, it stays
-    visible — with its EV/Edge/Stake numbers refreshed each cycle if the game
-    is still live in the odds feed — until either (a) its start time passes,
-    or (b) the event vanishes from the API entirely (postponed/pulled). It is
-    NOT re-judged from zero on every refresh.
-    """
     ledger = load_bet_ledger()
     now_iso = datetime.now().isoformat()
 
@@ -1451,8 +1117,6 @@ def update_bet_ledger(qualifying_bets: list, all_known_keys: set) -> dict:
             "last_updated": now_iso,
         }
 
-    # Expire: game already started, OR the event no longer appears anywhere
-    # in the latest full fetch at all (postponed/pulled from the board).
     now_utc = _TZ_UTC.localize(datetime.utcnow())
     for key in list(ledger.keys()):
         entry = ledger[key]
@@ -1472,14 +1136,6 @@ def update_bet_ledger(qualifying_bets: list, all_known_keys: set) -> dict:
 
 
 def bet_timing_status(start_iso: str) -> tuple[str, str]:
-    """
-    Heuristic only — there's no real closing-line-value feed available here,
-    so this is a rough "how much time do you have" indicator, not a
-    scientifically-derived optimal-entry signal:
-      - very early: line has more room to move, could firm up or drift
-      - a few hours out: usually the most stable window to act
-      - <30 min: closing fast, line may be thin/moving quickly
-    """
     try:
         naive = datetime.strptime(str(start_iso).replace("Z", ""), "%Y-%m-%dT%H:%M:%S")
         start_dt = _TZ_UTC.localize(naive)
@@ -1501,40 +1157,15 @@ def bet_timing_status(start_iso: str) -> tuple[str, str]:
 # NEWS / INJURY SIGNAL — best-effort only, not a real injury feed
 # =============================================================================
 def flagged_injury_headlines(headlines: list) -> set:
-    """Returns the lowercase text of headlines that matched RISK_KEYWORDS."""
     return {h.lower() for h in headlines if detect_injury_alert(h)}
 
 
 def apply_injury_flags(df: pd.DataFrame, flagged_headlines: set, sport: str = "") -> pd.DataFrame:
-    """
-    Fix 15/17: Risk Meter was previously a hardcoded constant (30) for every
-    single game, so the injury-penalty logic could never fire regardless of
-    when you checked. Wired to the same RSS headlines already pulled for the
-    Live Hub's news panel. Two follow-on problems fixed here:
-
-    (a) SPORT-AWARE MAGNITUDE: a flat penalty treated a hurt tennis player
-        the same as a hurt bench player on a 12-man roster. In a 1-on-1
-        sport, the flagged player basically IS the match; in a team sport,
-        one player is diluted across a full roster. Tennis now gets a much
-        larger probability adjustment than team sports do.
-
-    (b) SIDE-AWARE DIRECTION: previously ANY flag (home or away) reduced the
-        HOME team's win probability, even when it was the AWAY team's player
-        who was actually hurt — backwards half the time. Home and away are
-        now tracked and penalized separately, in the correct direction.
-
-    IMPORTANT caveat either way: this is a coarse heuristic, not a real
-    injury-report API. It flags a team if the last significant word of its
-    name (mascot, or a player's last name for tennis) appears in a headline
-    that also matched RISK_KEYWORDS. ESPN's RSS feed is sparse, can lag real
-    news by hours, and this substring match can both miss real news and
-    occasionally false-flag on an unrelated headline sharing a word.
-    """
     if df is None or df.empty:
         return df
     df = df.copy()
     is_solo_sport = (sport == "Tennis")
-    flagged_risk_level = 95 if is_solo_sport else 70   # solo sport: near match-deciding; team sport: diluted
+    flagged_risk_level = 95 if is_solo_sport else 70
 
     if not flagged_headlines:
         df["_home_injury_risk"] = 30
@@ -1555,7 +1186,6 @@ def apply_injury_flags(df: pd.DataFrame, flagged_headlines: set, sport: str = ""
         away_risk.append(flagged_risk_level if _team_flagged(row.get("Away Team", "")) else 30)
     df["_home_injury_risk"] = home_risk
     df["_away_injury_risk"] = away_risk
-    # Keep "Risk Meter" for display/back-compat, showing the worse of the two
     df["Risk Meter"] = [max(h, a) for h, a in zip(home_risk, away_risk)]
     return df
 
@@ -1766,9 +1396,6 @@ def _render_prediction_table(df: pd.DataFrame, sport: str):
                     ev_str    = "<span class='ev-red'>Corrupted odds — do not bet</span>"
                     stake_str = ""
                 else:
-                    # Fix 10: read the side the model actually priced, rather than
-                    # re-guessing "whichever is cheaper" — those disagreed whenever
-                    # the away team was the favorite but home had the real edge.
                     home_t = row.get("Home Team", row.get("Match","? vs ?").split(" vs ")[0].strip())
                     away_t = row.get("Away Team", row.get("Match","? vs ?").split(" vs ")[-1].strip())
                     rec_team = row.get("Bet Team") or (home_t if h_f <= a_f else away_t)
@@ -1866,11 +1493,6 @@ def _fetch_schedule_tennis(days: int = 7) -> list:
 # MAIN
 # =============================================================================
 def main():
-    # Fix 13: auto-refresh the app on a timer so data updates on its own —
-    # no more relying on manually clicking Force Refresh. Prefers the
-    # streamlit-autorefresh component (smooth, doesn't reset scroll position
-    # or collapse expanders); falls back to a plain HTML meta-refresh if that
-    # package isn't installed, which works but causes a full page reload.
     try:
         from streamlit_autorefresh import st_autorefresh
         st_autorefresh(interval=AUTO_REFRESH_INTERVAL_SEC * 1000, key="auto_refresh_ticker")
@@ -1893,21 +1515,9 @@ def main():
     model_cfg    = load_model_config()
     bankroll_cfg = load_bankroll_config()
 
-    # ── Settings (in-page, sidebar removed) ─────────────────────────────────
-    # Fix 23: this expander previously loaded model_cfg/bankroll_cfg from disk
-    # but never displayed or let you edit either — model_settings.json was
-    # completely invisible from the UI, and the bankroll input's default was
-    # hardcoded to 1500.0 instead of reading bankroll_cfg["starting_bankroll"],
-    # so load_bankroll_config()'s return value was fetched and silently
-    # discarded. Given Streamlit Cloud wipes these JSON files on every
-    # redeploy (ephemeral filesystem), there was previously NO way to notice
-    # if either config had silently reverted to generic defaults. Both are
-    # now visible and editable here, with the CURRENT live values shown
-    # explicitly so a redeploy-triggered reset is obvious instead of silent.
     with st.expander("⚙️ Settings", expanded=False):
         c1, c2, c3 = st.columns(3)
         with c1:
-            # Fix 26: no artificial minimum — a real bankroll can be well under 100.
             bankroll   = st.number_input("Bankroll (C$)", min_value=1.0,
                                           value=float(bankroll_cfg.get("starting_bankroll", 1500.0)), step=1.0)
             risk_level = st.radio("Kelly Risk Level", ["Safe","Moderate","Aggressive"],
@@ -1962,10 +1572,6 @@ def main():
                 "form_factor": model_cfg.get("form_factor", 0.5),
                 "odds_weight": model_cfg.get("odds_weight", 0.5),
             })
-            # Without this, the already-cached odds data (computed with the OLD
-            # model_cfg) would keep being shown until the next 15-min auto-refresh
-            # cycle — the save would silently have no visible effect for up to
-            # 15 minutes, which looks exactly like "the setting didn't work."
             st.cache_data.clear()
             for key in ["data_nba","data_mlb","data_tennis","data_wnba","data_fetched_at"]:
                 st.session_state.pop(key, None)
@@ -1993,9 +1599,6 @@ def main():
         st.caption("NBA/WNBA · MLB · Tennis")
     with col_l:
         if st.button("🔄 Force Refresh Data", width="stretch"):
-            # Wipes the @st.cache_data-backed fetch_premium_odds cache so a
-            # stuck/stale response can never survive a click — clearing only
-            # session_state (as before) left the underlying cache intact.
             st.cache_data.clear()
             for key in ["data_nba","data_mlb","data_tennis","data_wnba","data_fetched_at"]:
                 st.session_state.pop(key, None)
@@ -2004,11 +1607,6 @@ def main():
     _key_status_banner()
 
     # ── Data fetch ────────────────────────────────────────────────────────────
-    # Fix 13 follow-through: previously gated on calendar day, so once fetched
-    # it wouldn't refresh again until midnight regardless of how stale the
-    # 15-min-cached odds got. Now gated on elapsed time, matching the
-    # auto-refresh ticker above, so it genuinely stays current all day without
-    # needing a manual click.
     last_fetch_at = st.session_state.get("data_fetched_at")
     seconds_since_fetch = (datetime.now() - last_fetch_at).total_seconds() if last_fetch_at else None
     needs_fetch = last_fetch_at is None or seconds_since_fetch >= AUTO_REFRESH_INTERVAL_SEC
@@ -2018,9 +1616,6 @@ def main():
         try:
             max_stake_cap = bankroll_cfg.get("max_stake")
 
-            # Fix 15: pull injury/news headlines ONCE per fetch cycle here (not
-            # per-tab) so the same signal both flags risk for the model AND
-            # feeds the Live Hub's news panel below — one fetch, two uses.
             nba_hl    = fetch_rss_headlines(["https://www.espn.com/espn/rss/nba/news"])
             mlb_hl    = fetch_rss_headlines(["https://www.espn.com/espn/rss/mlb/news"])
             tennis_hl = fetch_rss_headlines(["https://www.espn.com/espn/rss/tennis/news"])
@@ -2035,7 +1630,6 @@ def main():
 
             prog.progress(30, text="🏀 Fetching WNBA (NBA off-season fill)…")
             df_wnba_raw = apply_injury_flags(fetch_premium_odds("basketball_wnba"), flagged_hl, sport="NBA")
-            # Merge WNBA into NBA tab if NBA is empty (off-season)
             if df_nba_raw.empty and not df_wnba_raw.empty:
                 st.session_state["data_nba"] = calculate_stakes(
                     calculate_real_ev(df_wnba_raw, model_cfg, "NBA"), bankroll, risk_level, max_stake_cap=max_stake_cap)
@@ -2062,8 +1656,6 @@ def main():
         except Exception as e:
             prog.empty(); st.error(f"❌ Data fetch error: {e}")
 
-    # Fix 13: always show how old the current numbers are, so staleness is
-    # visible at a glance instead of a silent guess.
     fresh_ts = st.session_state.get("data_fetched_at")
     if fresh_ts:
         age_min = int((datetime.now() - fresh_ts).total_seconds() / 60)
@@ -2073,63 +1665,10 @@ def main():
     df_mlb    = _filter_past_games(st.session_state.get("data_mlb",    pd.DataFrame()))
     df_tennis = _filter_past_games(st.session_state.get("data_tennis", pd.DataFrame()))
 
-    # ── Debug panel ───────────────────────────────────────────────────────────
-    bypass_filters = st.checkbox(
-        "🔧 Show all games (bypass implied-sum filter)",
-        value=st.session_state.get("debug_bypass_filters", False),
-        key="debug_bypass_filters",
-    )
-    if bypass_filters:
-        for _sk in ["data_nba","data_mlb","data_tennis","data_fetched_at"]:
-            st.session_state.pop(_sk, None)
-        fetch_premium_odds.clear()
-
-    with st.expander("🔍 Pipeline counts", expanded=True):
-        c1, c2, c3 = st.columns(3)
-        c1.metric("NBA rows",    len(df_nba))
-        c2.metric("MLB rows",    len(df_mlb))
-        c3.metric("Tennis rows", len(df_tennis))
-
-        # Fix 27: shows WHY the Top Bets list is empty (or isn't) instead of
-        # requiring you to trust it — walks the same filter stages find_top_bets
-        # uses (24h window → floor → ceiling → edge threshold) and reports the
-        # count remaining after each one, plus the closest miss if nothing
-        # qualifies, so a real "no games meet the bar right now" is visibly
-        # different from a bug silently zeroing everything out.
-        st.markdown("**Why Top Bets shows what it shows (next 24h):**")
-        for label, df_s in [("NBA", df_nba), ("MLB", df_mlb), ("Tennis", df_tennis)]:
-            sport_key = "MLB" if label == "MLB" else ("Tennis" if label == "Tennis" else "NBA")
-            funnel = diagnose_qualification_funnel(df_s, sport_key, hours=24)
-            fc1, fc2, fc3, fc4, fc5 = st.columns(5)
-            fc1.metric(f"{label}: in window", funnel["in_24h_window"])
-            fc2.metric("MLB cap", funnel["after_mlb_cap"])
-            fc3.metric("Above floor", funnel["above_floor"])
-            fc4.metric("Below ceiling", funnel["below_ceiling"])
-            fc5.metric("Qualifying", funnel["meets_edge_threshold"])
-            if funnel["meets_edge_threshold"] == 0 and funnel["closest_miss"]:
-                cm = funnel["closest_miss"]
-                st.caption(f"Closest miss: {cm['match']} — edge {cm['edge_pct']:+.2f}% "
-                           f"(needs ≥{cm['needed_edge_pct']}%), EV+ {cm['ev_plus']}")
-
-        st.divider()
-        for label, df_s in [("NBA", df_nba), ("MLB", df_mlb), ("Tennis", df_tennis)]:
-            if df_s is not None and not df_s.empty and "EV+" in df_s.columns:
-                cols_to_show = [c for c in ["Match","Home Odds","Away Odds","EV+","Edge %"] if c in df_s.columns]
-                st.markdown(f"**{label} — sample EV+ values:**")
-                st.dataframe(df_s[cols_to_show].head(3), hide_index=True, width="stretch")
-        for label, sk in [("NBA","basketball_nba"),("MLB","baseball_mlb"),("Tennis","tennis")]:
-            raw = st.session_state.get(f"debug_raw_event_{sk}")
-            if raw:
-                st.markdown(f"**{label} — first raw event:**")
-                st.json(raw)
-
     # Auto paper trade
     if not df_nba.empty or not df_mlb.empty or not df_tennis.empty:
         if (datetime.now() - st.session_state.last_paper_trade).total_seconds() >= PAPER_TRADE_INTERVAL:
             _ok, _msg = execute_paper_trade(df_nba, df_mlb, df_tennis)
-            # Fix 21: no auto-settle anymore. Picks stay PENDING until you
-            # grade them by hand from the actual Rainbet result — see the
-            # "Grade Picks" panel in the Recommendation Log below.
             st.session_state.last_paper_trade = datetime.now()
 
     # ── TABS ──────────────────────────────────────────────────────────────────
@@ -2137,11 +1676,6 @@ def main():
 
     # ── TAB 0: Live Hub ───────────────────────────────────────────────────────
     with tabs[0]:
-        # Fix 11: banner and list share one source of truth (still true here).
-        # Fix 14: that source is now the STICKY LEDGER, not a raw live recompute
-        # — a bet that qualified a cycle ago stays listed (numbers refreshed)
-        # until it starts or vanishes from the feed, instead of flickering
-        # in/out because its edge moved a fraction of a percent between runs.
         all_known_keys = set()
         for _df in [df_nba, df_mlb, df_tennis]:
             if _df is not None and not _df.empty:
@@ -2226,8 +1760,6 @@ def main():
 
         st.divider()
         st.subheader("📰 Injury & News Alerts")
-        # Fix 15: reuse the SAME headline fetch already done this cycle for the
-        # Risk Meter flagging above, instead of a second redundant RSS call.
         nba_hl    = st.session_state.get("_nba_hl", [])
         mlb_hl    = st.session_state.get("_mlb_hl", [])
         tennis_hl = st.session_state.get("_tennis_hl", [])
@@ -2238,92 +1770,6 @@ def main():
         for h in [h for h in nba_hl    if not detect_injury_alert(h)][:3]: st.markdown(f"🏀 {h}")
         for h in [h for h in mlb_hl    if not detect_injury_alert(h)][:3]: st.markdown(f"⚾ {h}")
         if not alerts: st.success("✅ No injury alerts detected.")
-
-        st.divider()
-        with st.expander("✅ Grade Picks — enter real Rainbet results", expanded=True):
-            st.caption(
-                "Fix 21: picks no longer auto-settle on a random-number coin-flip. "
-                "Pick the match, enter what actually happened on Rainbet, and it's "
-                "saved permanently to the graded record below.")
-            pending = [t for t in load_paper_trades() if t.get("status") == "PENDING"]
-            if pending:
-                pending_sorted = sorted(pending, key=lambda t: t.get("timestamp",""), reverse=True)
-                def _pick_label(t: dict) -> str:
-                    bet_team = t.get("bet_team", "")
-                    # Fix 25: rows logged before this fix have no bet_team saved —
-                    # fall back to just the matchup rather than showing a blank pick.
-                    pick = f"✅ {bet_team}" if bet_team else "⚠️ pick not recorded (pre-fix)"
-                    return (f"{pick} — {t.get('match','?')} — {t.get('sport','')} "
-                            f"@ {float(t.get('odds',0) or 0):.2f}x ({str(t.get('timestamp',''))[:16]})")
-                labels = [_pick_label(t) for t in pending_sorted]
-                sel_idx = st.selectbox("Pending pick", range(len(labels)),
-                                        format_func=lambda i: labels[i], key="grade_pick_select")
-                sel_trade = pending_sorted[sel_idx]
-                gcol1, gcol2, gcol3, gcol4 = st.columns(4)
-                if gcol1.button("✅ WIN", key="grade_win", width="stretch"):
-                    grade_trade_manually(sel_trade.get("id"), "WIN"); st.rerun()
-                if gcol2.button("❌ LOSS", key="grade_loss", width="stretch"):
-                    grade_trade_manually(sel_trade.get("id"), "LOSS"); st.rerun()
-                if gcol3.button("➖ PUSH", key="grade_push", width="stretch"):
-                    grade_trade_manually(sel_trade.get("id"), "PUSH"); st.rerun()
-                if gcol4.button("🚫 VOID", key="grade_void", width="stretch"):
-                    grade_trade_manually(sel_trade.get("id"), "VOID"); st.rerun()
-            else:
-                st.info("No pending picks waiting to be graded.")
-
-        with st.expander("📊 Real Win Rate (manually graded only)", expanded=True):
-            stats = calculate_success_rate()
-            if stats["total"] > 0:
-                s1, s2, s3, s4 = st.columns(4)
-                s1.metric("Graded Bets", stats["total"])
-                s2.metric("Wins", stats["wins"])
-                s3.metric("Losses", stats["losses"])
-                s4.metric("Win Rate", f"{stats['success_rate']:.1f}%")
-                st.caption("Broken out by sport — helps confirm which market is actually the leak:")
-                by_sport = calculate_success_rate_by_group("sport")
-                if not by_sport.empty:
-                    st.dataframe(by_sport, hide_index=True, width="stretch")
-            else:
-                st.info("No graded picks yet. Grade some above to start building a real track record.")
-
-        st.divider()
-        with st.expander("📋 Recommendation Log (background auto-logged picks)", expanded=False):
-            st.caption(
-                "This is a passive record of what the app recommended in the background "
-                "roughly every 20 minutes — not a record of what you actually bet on "
-                "Rainbet. Grade real results in the panel above; this table just shows "
-                "everything logged, including still-pending picks. Note: this file resets "
-                "whenever the app container redeploys or restarts, so it won't show picks "
-                "from before the last restart.")
-            trades = load_paper_trades()
-            if trades:
-                try:
-                    tdf = pd.DataFrame(trades)
-                    col_order = ["timestamp","match","sport","odds","ev_plus","stake",
-                                 "edge_pct","strategy","result","status"]
-                    tdf = tdf[[c for c in col_order if c in tdf.columns]]
-                    tdf = tdf.rename(columns={
-                        "timestamp":"Time","match":"Match","sport":"Sport","odds":"Odds",
-                        "ev_plus":"EV+","stake":"Stake (C$)","edge_pct":"Edge %",
-                        "strategy":"Strategy","result":"Result","status":"Status"})
-                    for col in ["Odds","EV+","Stake (C$)","Edge %"]:
-                        if col in tdf.columns:
-                            tdf[col] = pd.to_numeric(tdf[col], errors="coerce")
-                    tdf = tdf.sort_values("Time", ascending=False) if "Time" in tdf.columns else tdf
-                    st.dataframe(tdf, hide_index=True, width="stretch",
-                        column_config={
-                            "EV+":        st.column_config.NumberColumn("EV+",        format="%.4f"),
-                            "Stake (C$)": st.column_config.NumberColumn("Stake (C$)", format="%.2f"),
-                            "Odds":       st.column_config.NumberColumn("Odds",       format="%.2f"),
-                            "Edge %":     st.column_config.NumberColumn("Edge %",     format="%.2f"),
-                        })
-                    st.caption(f"{len(trades)} logged picks total")
-                except Exception as e:
-                    st.error(f"❌ Log table failed to render: {e}")
-                    st.caption("Falling back to plain table view:")
-                    st.table(pd.DataFrame(trades))
-            else:
-                st.info("No picks logged yet since the last restart.")
 
     # ── TAB 1: NBA ────────────────────────────────────────────────────────────
     with tabs[1]:
@@ -2377,11 +1823,6 @@ def main():
             st.error("🎾 No tennis matches returned. Key may not support tennis on this plan.")
 
     st.divider()
-    st.markdown(
-        "<p style='text-align:center;font-size:12px;color:#555;'>"
-        "📈 Sports EV+ Dashboard v2 &nbsp;|&nbsp; NBA · MLB · Tennis"
-        " &nbsp;|&nbsp; Data: The Odds API &nbsp;|&nbsp; All amounts in CAD"
-        "</p>", unsafe_allow_html=True)
 
 
 if __name__ == "__main__":
