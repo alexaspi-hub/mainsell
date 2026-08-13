@@ -132,7 +132,7 @@ HEAVY_FAVORITE_FLOOR = 1.30        # Loosened from 1.50 to let more (heavier) fa
 LINE_DRIFT_BUFFER = 0.10           # Shrunk from 0.15 alongside the floor loosening above.
 EFFECTIVE_FAVORITE_FLOOR = HEAVY_FAVORITE_FLOOR + LINE_DRIFT_BUFFER   # 1.40
 
-MAX_UNDERDOG_ODDS = 3.00
+MAX_UNDERDOG_ODDS = 2.20           # Tightened from 3.00 to lean the picks toward favorites.
 
 HEAVY_FAVORITE_EV_EXCEPTION_THRESHOLD = 0.05   # EV+ must exceed this to bypass floor
 
@@ -611,12 +611,34 @@ def calculate_real_ev(df: pd.DataFrame, model_cfg: dict, sport: str = "NBA") -> 
         home_t = row.get("Home Team", "")
         away_t = row.get("Away Team", "")
 
-        if ev_h >= ev_a:
-            bet_side, bet_prob, bet_price_v, bet_ev, bet_edge, bet_team = \
-                "Home", model_h, h_odds, ev_h, edge_h, home_t
+        # Favorite-lean: identify which side is the market favorite (lower
+        # decimal odds) and require the underdog side to beat it by a real
+        # margin, not just edge it out narrowly on paper. This discounts the
+        # underdog's EV+ before comparing, so a close call goes to the
+        # favorite instead of whichever side happens to have a slightly
+        # inflated model probability. The underdog can still win the
+        # comparison if its edge is genuinely large — this isn't a hard ban,
+        # just a thumb on the scale toward favorites.
+        UNDERDOG_EV_DISCOUNT = 0.35   # underdog EV+ must clear this fraction extra to beat the favorite
+
+        if h_odds <= a_odds:
+            fav_ev, fav_side  = ev_h, "Home"
+            dog_ev, dog_side  = ev_a, "Away"
         else:
-            bet_side, bet_prob, bet_price_v, bet_ev, bet_edge, bet_team = \
-                "Away", model_a, a_odds, ev_a, edge_a, away_t
+            fav_ev, fav_side  = ev_a, "Away"
+            dog_ev, dog_side  = ev_h, "Home"
+
+        dog_ev_discounted = dog_ev * (1.0 - UNDERDOG_EV_DISCOUNT) if dog_ev > 0 else dog_ev
+
+        if fav_ev >= dog_ev_discounted:
+            bet_side = fav_side
+        else:
+            bet_side = dog_side
+
+        if bet_side == "Home":
+            bet_prob, bet_price_v, bet_ev, bet_edge, bet_team = model_h, h_odds, ev_h, edge_h, home_t
+        else:
+            bet_prob, bet_price_v, bet_ev, bet_edge, bet_team = model_a, a_odds, ev_a, edge_a, away_t
 
         ai_probs.append(round(bet_prob * 100, 1))
         edges.append(round(bet_edge, 2))
