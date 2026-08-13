@@ -132,7 +132,7 @@ HEAVY_FAVORITE_FLOOR = 1.30        # Loosened from 1.50 to let more (heavier) fa
 LINE_DRIFT_BUFFER = 0.10           # Shrunk from 0.15 alongside the floor loosening above.
 EFFECTIVE_FAVORITE_FLOOR = HEAVY_FAVORITE_FLOOR + LINE_DRIFT_BUFFER   # 1.40
 
-MAX_UNDERDOG_ODDS = 2.20           # Tightened from 3.00 to lean the picks toward favorites.
+MAX_UNDERDOG_ODDS = 1.85           # Tightened further to lean the picks more toward favorites.
 
 HEAVY_FAVORITE_EV_EXCEPTION_THRESHOLD = 0.05   # EV+ must exceed this to bypass floor
 
@@ -619,7 +619,7 @@ def calculate_real_ev(df: pd.DataFrame, model_cfg: dict, sport: str = "NBA") -> 
         # inflated model probability. The underdog can still win the
         # comparison if its edge is genuinely large — this isn't a hard ban,
         # just a thumb on the scale toward favorites.
-        UNDERDOG_EV_DISCOUNT = 0.35   # underdog EV+ must clear this fraction extra to beat the favorite
+        UNDERDOG_EV_DISCOUNT = 0.55   # underdog EV+ must clear this fraction extra to beat the favorite
 
         if h_odds <= a_odds:
             fav_ev, fav_side  = ev_h, "Home"
