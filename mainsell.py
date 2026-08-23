@@ -1551,6 +1551,13 @@ def main():
     model_cfg    = load_model_config()
     bankroll_cfg = load_bankroll_config()
 
+    # Always defined regardless of whether Settings is locked/unlocked — the
+    # data-fetch block below needs these no matter what. When Settings is
+    # locked, these just use the saved config values; unlocking lets you
+    # change them via the widgets below (which then get used for this run).
+    bankroll   = float(bankroll_cfg.get("starting_bankroll", 1500.0))
+    risk_level = bankroll_cfg.get("kelly_fraction", "Moderate")
+
     with st.expander("⚙️ Settings", expanded=False):
         if not st.session_state.get("settings_unlocked", False):
             pin_entry = st.text_input("Enter 4-digit code", type="password", max_chars=4, key="settings_pin_entry")
@@ -1564,11 +1571,10 @@ def main():
             c1, c2 = st.columns(2)
             with c1:
                 bankroll   = st.number_input("Bankroll (C$)", min_value=1.0,
-                                              value=float(bankroll_cfg.get("starting_bankroll", 1500.0)), step=1.0)
+                                              value=bankroll, step=1.0)
             with c2:
                 risk_level = st.radio("Kelly Risk Level", ["Safe","Moderate","Aggressive"],
-                                       index=["Safe","Moderate","Aggressive"].index(
-                                           bankroll_cfg.get("kelly_fraction", "Moderate")))
+                                       index=["Safe","Moderate","Aggressive"].index(risk_level))
 
             # These stay fixed at their defaults unless changed here — the model/edge
             # tuning controls were removed since they're not needed day to day.
