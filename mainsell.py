@@ -161,6 +161,11 @@ FLOOR_EXCEPTION_LOG_PATH = Path("floor_exception_log.json")
 
 AUTO_REFRESH_INTERVAL_SEC = 900
 
+# Simple 4-digit PIN gate for the Settings panel only — not real security
+# (it's a plain string check, visible to anyone reading this file), just a
+# casual barrier so Settings isn't editable by anyone who opens the app.
+SETTINGS_PIN = "3578"   # change this to whatever 4-digit code you want
+
 _AS_NBA    = "https://v1.basketball.api-sports.io"
 _AS_TENNIS = "https://v1.tennis.api-sports.io"
 _AS_MLB    = "https://v1.baseball.api-sports.io"
@@ -1547,35 +1552,48 @@ def main():
     bankroll_cfg = load_bankroll_config()
 
     with st.expander("⚙️ Settings", expanded=False):
-        c1, c2 = st.columns(2)
-        with c1:
-            bankroll   = st.number_input("Bankroll (C$)", min_value=1.0,
-                                          value=float(bankroll_cfg.get("starting_bankroll", 1500.0)), step=1.0)
-        with c2:
-            risk_level = st.radio("Kelly Risk Level", ["Safe","Moderate","Aggressive"],
-                                   index=["Safe","Moderate","Aggressive"].index(
-                                       bankroll_cfg.get("kelly_fraction", "Moderate")))
+        if not st.session_state.get("settings_unlocked", False):
+            pin_entry = st.text_input("Enter 4-digit code", type="password", max_chars=4, key="settings_pin_entry")
+            if st.button("Unlock", key="settings_unlock_btn"):
+                if pin_entry == SETTINGS_PIN:
+                    st.session_state["settings_unlocked"] = True
+                    st.rerun()
+                else:
+                    st.error("❌ Incorrect code.")
+        else:
+            c1, c2 = st.columns(2)
+            with c1:
+                bankroll   = st.number_input("Bankroll (C$)", min_value=1.0,
+                                              value=float(bankroll_cfg.get("starting_bankroll", 1500.0)), step=1.0)
+            with c2:
+                risk_level = st.radio("Kelly Risk Level", ["Safe","Moderate","Aggressive"],
+                                       index=["Safe","Moderate","Aggressive"].index(
+                                           bankroll_cfg.get("kelly_fraction", "Moderate")))
 
-        # These stay fixed at their defaults unless changed here — the model/edge
-        # tuning controls were removed since they're not needed day to day.
-        model_confidence    = model_cfg.get("model_confidence", 1.0)
-        injury_penalty_pct  = model_cfg.get("injury_penalty_pct", 5.0)
-        edge_threshold_pct  = model_cfg.get("edge_threshold_pct", MIN_EDGE_THRESHOLD)
-        max_underdog_odds   = model_cfg.get("max_underdog_odds", MAX_UNDERDOG_ODDS)
+            # These stay fixed at their defaults unless changed here — the model/edge
+            # tuning controls were removed since they're not needed day to day.
+            model_confidence    = model_cfg.get("model_confidence", 1.0)
+            injury_penalty_pct  = model_cfg.get("injury_penalty_pct", 5.0)
+            edge_threshold_pct  = model_cfg.get("edge_threshold_pct", MIN_EDGE_THRESHOLD)
+            max_underdog_odds   = model_cfg.get("max_underdog_odds", MAX_UNDERDOG_ODDS)
 
-        if st.button("💾 Save", width="stretch"):
-            save_bankroll_config({
-                "starting_bankroll": bankroll,
-                "min_stake": bankroll_cfg.get("min_stake", 10.0),
-                "max_stake": bankroll_cfg.get("max_stake", 500.0),
-                "max_drawdown_pct": bankroll_cfg.get("max_drawdown_pct", 25.0),
-                "kelly_fraction": risk_level,
-            })
-            st.cache_data.clear()
-            for key in ["data_nba","data_mlb","data_tennis","data_wnba","data_nhl","data_nfl","data_ncaaf","data_fetched_at"]:
-                st.session_state.pop(key, None)
-            st.success("✅ Saved.")
-            st.rerun()
+            if st.button("💾 Save", width="stretch"):
+                save_bankroll_config({
+                    "starting_bankroll": bankroll,
+                    "min_stake": bankroll_cfg.get("min_stake", 10.0),
+                    "max_stake": bankroll_cfg.get("max_stake", 500.0),
+                    "max_drawdown_pct": bankroll_cfg.get("max_drawdown_pct", 25.0),
+                    "kelly_fraction": risk_level,
+                })
+                st.cache_data.clear()
+                for key in ["data_nba","data_mlb","data_tennis","data_wnba","data_nhl","data_nfl","data_ncaaf","data_fetched_at"]:
+                    st.session_state.pop(key, None)
+                st.success("✅ Saved.")
+                st.rerun()
+
+            if st.button("🔒 Lock Settings", key="settings_lock_btn"):
+                st.session_state["settings_unlocked"] = False
+                st.rerun()
 
     # ── Header ────────────────────────────────────────────────────────────────
     col_t, col_l = st.columns([4,1])
@@ -1679,7 +1697,7 @@ def main():
             st.session_state.last_paper_trade = datetime.now()
 
     # ── TABS ──────────────────────────────────────────────────────────────────
-    tabs = st.tabs(["🏆 Live Hub","🏀 NBA","⚾ MLB","🎾 Tennis","🏒 NHL","🏈 NFL","🏈 NCAAF"])
+    tabs = st.tabs(["🏆 Live Hub","🏀 NBA","⚾ MLB","🎾 Tennis","🏒 NHL","🏈 NFL","🏈 NCAAF","📊 Tracking"])
 
     # ── TAB 0: Live Hub ───────────────────────────────────────────────────────
     with tabs[0]:
@@ -1903,6 +1921,118 @@ def main():
                 st.caption(f"🛡️ Covariance Shield: {df_ncaaf['_simultaneous_trades'].iloc[0]} simultaneous trades — stakes auto-scaled")
         else:
             st.info("🏈 No upcoming NCAAF games found. Try Refresh.")
+
+    # ── TAB 7: Tracking ───────────────────────────────────────────────────────
+    with tabs[7]:
+        st.header("📊 Tracking")
+        st.caption("Every bet the app has logged, plus manual grading and a backtest summary from graded results.")
+
+        if not st.session_state.get("tracking_unlocked", False):
+            pin_entry_tr = st.text_input("Enter 4-digit code", type="password", max_chars=4, key="tracking_pin_entry")
+            if st.button("Unlock", key="tracking_unlock_btn"):
+                if pin_entry_tr == SETTINGS_PIN:
+                    st.session_state["tracking_unlocked"] = True
+                    st.rerun()
+                else:
+                    st.error("❌ Incorrect code.")
+        else:
+            with st.expander("✅ Grade Picks — enter real Rainbet results", expanded=True):
+                st.caption(
+                    "Picks don't auto-settle. Pick the match, enter what actually "
+                    "happened on Rainbet, and it's saved permanently below.")
+                pending = [t for t in load_paper_trades() if t.get("status") == "PENDING"]
+                if pending:
+                    pending_sorted = sorted(pending, key=lambda t: t.get("timestamp",""), reverse=True)
+                    def _pick_label(t: dict) -> str:
+                        bet_team = t.get("bet_team", "")
+                        pick = f"✅ {bet_team}" if bet_team else "⚠️ pick not recorded"
+                        return (f"{pick} — {t.get('match','?')} — {t.get('sport','')} "
+                                f"@ {float(t.get('odds',0) or 0):.2f}x ({str(t.get('timestamp',''))[:16]})")
+                    labels = [_pick_label(t) for t in pending_sorted]
+                    sel_idx = st.selectbox("Pending pick", range(len(labels)),
+                                            format_func=lambda i: labels[i], key="grade_pick_select")
+                    sel_trade = pending_sorted[sel_idx]
+                    gcol1, gcol2, gcol3, gcol4 = st.columns(4)
+                    if gcol1.button("✅ WIN", key="grade_win", width="stretch"):
+                        grade_trade_manually(sel_trade.get("id"), "WIN"); st.rerun()
+                    if gcol2.button("❌ LOSS", key="grade_loss", width="stretch"):
+                        grade_trade_manually(sel_trade.get("id"), "LOSS"); st.rerun()
+                    if gcol3.button("➖ PUSH", key="grade_push", width="stretch"):
+                        grade_trade_manually(sel_trade.get("id"), "PUSH"); st.rerun()
+                    if gcol4.button("🚫 VOID", key="grade_void", width="stretch"):
+                        grade_trade_manually(sel_trade.get("id"), "VOID"); st.rerun()
+                else:
+                    st.info("No pending picks waiting to be graded.")
+
+            with st.expander("📊 Real Win Rate (manually graded only)", expanded=True):
+                stats = calculate_success_rate()
+                if stats["total"] > 0:
+                    s1, s2, s3, s4 = st.columns(4)
+                    s1.metric("Graded Bets", stats["total"])
+                    s2.metric("Wins", stats["wins"])
+                    s3.metric("Losses", stats["losses"])
+                    s4.metric("Win Rate", f"{stats['success_rate']:.1f}%")
+                    st.caption("Broken out by sport — helps confirm which market is actually the leak:")
+                    by_sport = calculate_success_rate_by_group("sport")
+                    if not by_sport.empty:
+                        st.dataframe(by_sport, hide_index=True, width="stretch")
+                else:
+                    st.info("No graded picks yet. Grade some above to start building a real track record.")
+
+            with st.expander("📈 Backtest Summary (settled trades)", expanded=True):
+                st.caption("Computed from picks graded WIN/LOSS above — not a simulation, just your real logged results.")
+                days_back = st.slider("Look back (days)", 1, 90, 30, key="backtest_days")
+                bt = run_backtest(days=days_back)
+                if "error" in bt:
+                    st.info(bt["error"])
+                else:
+                    b1, b2, b3, b4 = st.columns(4)
+                    b1.metric("Settled Trades", bt["total_trades"])
+                    b2.metric("Win Rate",       f"{bt['win_rate']:.1f}%")
+                    b3.metric("ROI (on stake)", f"{bt['roi']:+.2f}%")
+                    b4.metric("Profit Factor",  f"{bt['profit_factor']:.2f}")
+                    b5, b6, b7 = st.columns(3)
+                    b5.metric("Avg Win (C$)",   f"{bt['avg_win']:.2f}")
+                    b6.metric("Avg Loss (C$)",  f"{bt['avg_loss']:.2f}")
+                    b7.metric("Total Stake (C$)", f"{bt['total_stake']:,.2f}")
+
+            with st.expander("📋 All Logged Bets", expanded=True):
+                st.caption(
+                    "Every bet the app has recommended and logged in the background — "
+                    "not necessarily what you actually placed on Rainbet. Grade real "
+                    "results above. This resets if the app container restarts.")
+                trades = load_paper_trades()
+                if trades:
+                    try:
+                        tdf = pd.DataFrame(trades)
+                        col_order = ["timestamp","match","bet_team","sport","odds","ev_plus","stake",
+                                     "edge_pct","strategy","result","status"]
+                        tdf = tdf[[c for c in col_order if c in tdf.columns]]
+                        tdf = tdf.rename(columns={
+                            "timestamp":"Time","match":"Match","bet_team":"Pick","sport":"Sport","odds":"Odds",
+                            "ev_plus":"EV+","stake":"Stake (C$)","edge_pct":"Edge %",
+                            "strategy":"Strategy","result":"Result","status":"Status"})
+                        for col in ["Odds","EV+","Stake (C$)","Edge %"]:
+                            if col in tdf.columns:
+                                tdf[col] = pd.to_numeric(tdf[col], errors="coerce")
+                        tdf = tdf.sort_values("Time", ascending=False) if "Time" in tdf.columns else tdf
+                        st.dataframe(tdf, hide_index=True, width="stretch",
+                            column_config={
+                                "EV+":        st.column_config.NumberColumn("EV+",        format="%.4f"),
+                                "Stake (C$)": st.column_config.NumberColumn("Stake (C$)", format="%.2f"),
+                                "Odds":       st.column_config.NumberColumn("Odds",       format="%.2f"),
+                                "Edge %":     st.column_config.NumberColumn("Edge %",     format="%.2f"),
+                            })
+                        st.caption(f"{len(trades)} logged picks total")
+                    except Exception as e:
+                        st.error(f"❌ Log table failed to render: {e}")
+                        st.caption("Falling back to plain table view:")
+                        st.table(pd.DataFrame(trades))
+                else:
+                    st.info("No picks logged yet since the last restart.")
+            if st.button("🔒 Lock Tracking", key="tracking_lock_btn"):
+                st.session_state["tracking_unlocked"] = False
+                st.rerun()
 
     st.divider()
 
