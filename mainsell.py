@@ -990,13 +990,57 @@ def save_paper_trades(trades: list) -> None:
     except Exception as e:
         print(f"[save_paper_trades] ERROR: {e}")
 
+def dedupe_pending_trades() -> int:
+    """
+    One-time cleanup for duplicate PENDING rows that were logged before the
+    dedup check existed in execute_paper_trade. Keeps the EARLIEST PENDING
+    row per (match, bet_team) pair and drops the rest; SETTLED/VOID rows are
+    left untouched since those are real graded history, not accidental repeats.
+    Returns the number of rows removed.
+    """
+    trades = load_paper_trades()
+    if not trades:
+        return 0
+    pending = [t for t in trades if t.get("status") == "PENDING"]
+    other   = [t for t in trades if t.get("status") != "PENDING"]
+    if not pending:
+        return 0
+
+    pending_sorted = sorted(pending, key=lambda t: t.get("timestamp", ""))
+    seen = set()
+    kept = []
+    for t in pending_sorted:
+        key = (str(t.get("match", "")), str(t.get("bet_team", "")))
+        if key in seen:
+            continue
+        seen.add(key)
+        kept.append(t)
+
+    removed = len(pending) - len(kept)
+    if removed > 0:
+        save_paper_trades(other + kept)
+    return removed
+
 def execute_paper_trade(*dfs) -> tuple[bool, str]:
     top3 = find_top_bets(*dfs, n=3)
     if not top3:
         return False, "No qualifying bets found (EV+ > threshold + Edge ≥ 4.5% required)."
     trades = load_paper_trades()
+
+    # Dedup: without this, the same still-qualifying match gets appended again
+    # every time execute_paper_trade runs (every app rerun) for as long as it
+    # stays in the qualifying window — one real game could log dozens of
+    # near-identical PENDING rows. Skip logging a match that already has a
+    # PENDING entry; it'll naturally drop out once it starts or gets graded.
+    already_pending_matches = {
+        str(t.get("match", "")) for t in trades if t.get("status") == "PENDING"
+    }
+
     logged = []
     for best in top3:
+        match_name = best.get("Match", "Unknown")
+        if match_name in already_pending_matches:
+            continue
         bet_odds_v = best.get("Bet Odds")
         if bet_odds_v not in (None, ""):
             logged_odds = bet_odds_v
@@ -1004,9 +1048,9 @@ def execute_paper_trade(*dfs) -> tuple[bool, str]:
             h_col = "Home Odds" if pd.notna(best.get("Home Odds")) else "P1 Odds"
             logged_odds = best.get(h_col, 0) or 0
         trades.append({
-            "id":           f"{best.get('Match','?')}_{datetime.now().strftime('%H%M%S')}",
+            "id":           f"{match_name}_{datetime.now().strftime('%H%M%S')}",
             "timestamp":    datetime.now().isoformat(),
-            "match":        best.get("Match", "Unknown"),
+            "match":        match_name,
             "bet_team":     best.get("Bet Team", "") or "",
             "sport":        best.get("_sport", ""),
             "odds":         logged_odds,
@@ -1019,7 +1063,10 @@ def execute_paper_trade(*dfs) -> tuple[bool, str]:
             "status":       "PENDING",
             "result":       "",
         })
-        logged.append(f"{best.get('Bet Team','?')} — {best.get('Match','?')} (EV+ {float(best.get('EV+',0)):+.4f})")
+        already_pending_matches.add(match_name)
+        logged.append(f"{best.get('Bet Team','?')} — {match_name} (EV+ {float(best.get('EV+',0)):+.4f})")
+    if not logged:
+        return False, "No new trades logged — all qualifying matches already have a pending entry."
     save_paper_trades(trades)
     return True, f"✅ Logged {len(logged)} trade(s): " + " | ".join(logged)
 
@@ -1702,6 +1749,14 @@ def main():
             _ok, _msg = execute_paper_trade(df_nba, df_mlb, df_tennis, df_nhl, df_nfl, df_ncaaf)
             st.session_state.last_paper_trade = datetime.now()
 
+    # Auto-dedupe: run once per app session (not every rerun) to clean up any
+    # duplicate PENDING rows left over from before execute_paper_trade had its
+    # own dedup check, or from any other source of repeats. Cheap no-op once
+    # the log is already clean.
+    if not st.session_state.get("_auto_deduped_this_session", False):
+        dedupe_pending_trades()
+        st.session_state["_auto_deduped_this_session"] = True
+
     # ── TABS ──────────────────────────────────────────────────────────────────
     tabs = st.tabs(["🏆 Live Hub","🏀 NBA","⚾ MLB","🎾 Tennis","🏒 NHL","🏈 NFL","🏈 NCAAF","📊 Tracking"])
 
@@ -2007,6 +2062,13 @@ def main():
                     "Every bet the app has recommended and logged in the background — "
                     "not necessarily what you actually placed on Rainbet. Grade real "
                     "results above. This resets if the app container restarts.")
+                if st.button("🧹 Remove duplicate pending picks", key="dedupe_trades_btn"):
+                    removed = dedupe_pending_trades()
+                    if removed > 0:
+                        st.success(f"✅ Removed {removed} duplicate pending row(s).")
+                        st.rerun()
+                    else:
+                        st.info("No duplicates found.")
                 trades = load_paper_trades()
                 if trades:
                     try:
