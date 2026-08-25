@@ -872,13 +872,20 @@ def find_best_bet(*dfs) -> pd.Series | None:
 
 def find_top_bets(*dfs, n: int = 8, per_sport_cap: int = 3, hours: int = 48) -> list:
     SPORT_CAPS = {"MLB": 2, "NBA": per_sport_cap, "Tennis": per_sport_cap}
+    # NFL and NCAAF games are scheduled much further in advance than daily
+    # sports (NBA/MLB/Tennis/NHL) — a single global lookahead window means
+    # football games sitting 3-10 days out never even get considered, since
+    # they're always outside a 24-48h cutoff. These two sports get a wider
+    # window so games actually become visible as they approach, instead of
+    # requiring the person to be checking at exactly the right moment.
+    SPORT_WINDOW_HOURS_OVERRIDE = {"NFL": 168, "NCAAF": 168}   # 7 days
     now_est    = datetime.now(_TZ_EASTERN)
-    cutoff_est = now_est + timedelta(hours=hours)
 
-    def _in_window(iso: str) -> bool:
+    def _in_window(iso: str, window_hours: float) -> bool:
         try:
             naive_utc = datetime.strptime(str(iso).replace("Z", ""), "%Y-%m-%dT%H:%M:%S")
             dt_est = _TZ_UTC.localize(naive_utc).astimezone(_TZ_EASTERN)
+            cutoff_est = now_est + timedelta(hours=window_hours)
             return now_est <= dt_est <= cutoff_est
         except Exception:
             return False
@@ -887,8 +894,11 @@ def find_top_bets(*dfs, n: int = 8, per_sport_cap: int = 3, hours: int = 48) -> 
     for df in dfs:
         if df is None or df.empty: continue
 
+        sport_name_early = df["_sport"].iloc[0] if "_sport" in df.columns else "?"
+        window_hours = SPORT_WINDOW_HOURS_OVERRIDE.get(sport_name_early, hours)
+
         if "_start_iso" in df.columns:
-            df = df[df["_start_iso"].apply(_in_window)].copy()
+            df = df[df["_start_iso"].apply(lambda iso: _in_window(iso, window_hours))].copy()
         if df.empty: continue
 
         sport_name = df["_sport"].iloc[0] if "_sport" in df.columns else "?"
