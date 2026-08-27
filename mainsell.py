@@ -132,7 +132,7 @@ HEAVY_FAVORITE_FLOOR = 1.30        # Loosened from 1.50 to let more (heavier) fa
 LINE_DRIFT_BUFFER = 0.10           # Shrunk from 0.15 alongside the floor loosening above.
 EFFECTIVE_FAVORITE_FLOOR = HEAVY_FAVORITE_FLOOR + LINE_DRIFT_BUFFER   # 1.40
 
-MAX_UNDERDOG_ODDS = 1.85           # Tightened further to lean the picks more toward favorites.
+MAX_UNDERDOG_ODDS = 1.65           # Tightened further to lean the picks more toward favorites.
 
 HEAVY_FAVORITE_EV_EXCEPTION_THRESHOLD = 0.05   # EV+ must exceed this to bypass floor
 
@@ -631,7 +631,7 @@ def calculate_real_ev(df: pd.DataFrame, model_cfg: dict, sport: str = "NBA") -> 
         # inflated model probability. The underdog can still win the
         # comparison if its edge is genuinely large — this isn't a hard ban,
         # just a thumb on the scale toward favorites.
-        UNDERDOG_EV_DISCOUNT = 0.55   # underdog EV+ must clear this fraction extra to beat the favorite
+        UNDERDOG_EV_DISCOUNT = 0.70   # underdog EV+ must clear this fraction extra to beat the favorite
 
         if h_odds <= a_odds:
             fav_ev, fav_side  = ev_h, "Home"
@@ -1232,6 +1232,28 @@ def update_bet_ledger(qualifying_bets: list, all_known_keys: set) -> dict:
     return ledger
 
 
+def filter_ledger_to_good_window(ledger: dict) -> dict:
+    """
+    Restricts the ledger to bets currently in the "Good window" timing band
+    (see bet_timing_status: 0.5-6 hours out — close enough that the odds
+    snapshot is unlikely to have drifted, far enough that the line has
+    settled). A bet that's too early is simply not shown yet; it appears
+    once it enters the good window, and disappears again once it starts or
+    drifts past it. This is a display filter only — it doesn't affect what's
+    stored in the ledger or what execute_paper_trade logs, only what the
+    Live Hub surfaces as "ready to act on."
+
+    IMPORTANT: "Good window" describes odds freshness / timing stability —
+    it is NOT a win-probability signal and never guarantees a bet will hit.
+    """
+    good = {}
+    for key, entry in ledger.items():
+        label, _ = bet_timing_status(entry.get("start_iso", ""))
+        if label == "✅ Good window":
+            good[key] = entry
+    return good
+
+
 def bet_timing_status(start_iso: str) -> tuple[str, str]:
     try:
         naive = datetime.strptime(str(start_iso).replace("Z", ""), "%Y-%m-%dT%H:%M:%S")
@@ -1781,6 +1803,12 @@ def main():
 
         qualifying_now = find_top_bets(df_nba, df_mlb, df_tennis, df_nhl, df_nfl, df_ncaaf, n=50, per_sport_cap=50, hours=24)
         ledger = update_bet_ledger(qualifying_now, all_known_keys)
+        # Show all currently-qualifying bets regardless of timing state (early,
+        # good window, or starting soon) — update_bet_ledger already handles
+        # auto-removal once a bet no longer qualifies at all (game started, or
+        # it vanished from the odds feed entirely). Each entry's timing label
+        # (bet_timing_status) is still shown per-row so you can see at a
+        # glance which ones are in a stable "Good window" right now.
         ledger_entries = sorted(ledger.values(), key=lambda e: (e.get("edge") or 0), reverse=True)
         total_simultaneous = len(ledger_entries)
 
