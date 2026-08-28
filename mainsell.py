@@ -117,8 +117,10 @@ body { overscroll-behavior-y: none !important; overflow-x: hidden !important; }
 # =============================================================================
 PAPER_TRADE_INTERVAL = 1200
 MIN_EV_THRESHOLD     = 0.01
-MIN_EDGE_THRESHOLD   = 2.0         # Eased slightly from 2.5 to let a few more bets clear the bar.
-MLB_MAX_ODDS         = 2.10        # Loosened from 1.90 to allow a bit more room.
+MIN_EDGE_THRESHOLD   = 1.5         # Eased from 2.0 after a real MLB game (Cubs/Reds) showed genuine
+                                    # +3.9% EV underdog edge getting rejected at 2.0% — see chat history.
+MLB_MAX_ODDS         = 2.75        # Raised to match the new underdog ceiling below, so MLB isn't
+                                    # capped tighter than other sports for no reason.
 KELLY_FRACTIONS      = {"Safe": 0.25, "Moderate": 0.50, "Aggressive": 0.75}
 MAX_KELLY_PCT        = 0.20
 CB_STAKE_MULTIPLIER  = 0.50
@@ -131,7 +133,11 @@ HEAVY_FAVORITE_FLOOR = 1.30        # Loosened from 1.50 to let more (heavier) fa
 LINE_DRIFT_BUFFER = 0.10           # Shrunk from 0.15 alongside the floor loosening above.
 EFFECTIVE_FAVORITE_FLOOR = HEAVY_FAVORITE_FLOOR + LINE_DRIFT_BUFFER   # 1.40
 
-MAX_UNDERDOG_ODDS = 1.85           # Eased slightly back up — 1.65 combined with the 70%
+MAX_UNDERDOG_ODDS = 2.75           # Raised from 1.85 — that ceiling was rejecting moderate
+                                    # underdogs with genuine positive EV (e.g. a 2.51x underdog
+                                    # with +3.9% EV that the favorite side didn't have). Stays well
+                                    # below the old 3.00x zone that had a documented 14.3% win rate
+                                    # in historical grading, so the real long-shot risk is still capped.
 
 HEAVY_FAVORITE_EV_EXCEPTION_THRESHOLD = 0.05   # EV+ must exceed this to bypass floor
 
@@ -630,7 +636,10 @@ def calculate_real_ev(df: pd.DataFrame, model_cfg: dict, sport: str = "NBA") -> 
         # inflated model probability. The underdog can still win the
         # comparison if its edge is genuinely large — this isn't a hard ban,
         # just a thumb on the scale toward favorites.
-        UNDERDOG_EV_DISCOUNT = 0.55   # Eased back from 0.70 — combined with the 1.65x ceiling it
+        UNDERDOG_EV_DISCOUNT = 0.35   # Eased from 0.55 — a real MLB example (Cubs/Reds) showed a
+                                       # moderate, genuinely positive-EV underdog getting discounted
+                                       # away entirely; this still requires a real edge advantage to
+                                       # beat the favorite, just not an overwhelming one.
 
         if h_odds <= a_odds:
             fav_ev, fav_side  = ev_h, "Home"
