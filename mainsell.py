@@ -117,8 +117,7 @@ body { overscroll-behavior-y: none !important; overflow-x: hidden !important; }
 # =============================================================================
 PAPER_TRADE_INTERVAL = 1200
 MIN_EV_THRESHOLD     = 0.01
-MIN_EDGE_THRESHOLD   = 2.5         # Loosened from 4.5 — was empirically 85% WR at 4.5%+, but with
-                                    # zero live bets qualifying this let nothing through at all.
+MIN_EDGE_THRESHOLD   = 2.0         # Eased slightly from 2.5 to let a few more bets clear the bar.
 MLB_MAX_ODDS         = 2.10        # Loosened from 1.90 to allow a bit more room.
 KELLY_FRACTIONS      = {"Safe": 0.25, "Moderate": 0.50, "Aggressive": 0.75}
 MAX_KELLY_PCT        = 0.20
@@ -132,7 +131,7 @@ HEAVY_FAVORITE_FLOOR = 1.30        # Loosened from 1.50 to let more (heavier) fa
 LINE_DRIFT_BUFFER = 0.10           # Shrunk from 0.15 alongside the floor loosening above.
 EFFECTIVE_FAVORITE_FLOOR = HEAVY_FAVORITE_FLOOR + LINE_DRIFT_BUFFER   # 1.40
 
-MAX_UNDERDOG_ODDS = 1.65           # Tightened further to lean the picks more toward favorites.
+MAX_UNDERDOG_ODDS = 1.85           # Eased slightly back up — 1.65 combined with the 70%
 
 HEAVY_FAVORITE_EV_EXCEPTION_THRESHOLD = 0.05   # EV+ must exceed this to bypass floor
 
@@ -631,7 +630,7 @@ def calculate_real_ev(df: pd.DataFrame, model_cfg: dict, sport: str = "NBA") -> 
         # inflated model probability. The underdog can still win the
         # comparison if its edge is genuinely large — this isn't a hard ban,
         # just a thumb on the scale toward favorites.
-        UNDERDOG_EV_DISCOUNT = 0.70   # underdog EV+ must clear this fraction extra to beat the favorite
+        UNDERDOG_EV_DISCOUNT = 0.55   # Eased back from 0.70 — combined with the 1.65x ceiling it
 
         if h_odds <= a_odds:
             fav_ev, fav_side  = ev_h, "Home"
