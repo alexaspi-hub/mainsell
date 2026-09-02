@@ -636,10 +636,11 @@ def calculate_real_ev(df: pd.DataFrame, model_cfg: dict, sport: str = "NBA") -> 
         # inflated model probability. The underdog can still win the
         # comparison if its edge is genuinely large — this isn't a hard ban,
         # just a thumb on the scale toward favorites.
-        UNDERDOG_EV_DISCOUNT = 0.35   # Eased from 0.55 — a real MLB example (Cubs/Reds) showed a
-                                       # moderate, genuinely positive-EV underdog getting discounted
-                                       # away entirely; this still requires a real edge advantage to
-                                       # beat the favorite, just not an overwhelming one.
+        UNDERDOG_EV_DISCOUNT = 0.0    # Balanced — no favorite lean. Whichever side (favorite or
+                                       # underdog) has the higher raw EV+ gets bet, full stop. Prior
+                                       # favorite-lean logic is still here (dog_ev_discounted below)
+                                       # in case you want to reintroduce a lean later, but at 0.0 it's
+                                       # a no-op: dog_ev_discounted == dog_ev exactly.
 
         if h_odds <= a_odds:
             fav_ev, fav_side  = ev_h, "Home"
