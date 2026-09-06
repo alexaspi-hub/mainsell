@@ -166,6 +166,15 @@ FLOOR_EXCEPTION_LOG_PATH = Path("floor_exception_log.json")
 
 AUTO_REFRESH_INTERVAL_SEC = 900
 
+# Shared per-sport lookahead window, in hours. NFL/NCAAF are scheduled far in
+# advance so they need a much wider window than daily sports — used both to
+# decide which games qualify (find_top_bets) and to scale the "how close is
+# this bet's start time" labels (bet_timing_status) so a 7-day football
+# window and a 24h tennis window each get a sensible "getting close" label
+# instead of one fixed set of hours for every sport.
+SPORT_WINDOW_HOURS_OVERRIDE = {"NFL": 168, "NCAAF": 168}   # 7 days
+DEFAULT_LOOKAHEAD_HOURS     = 24                            # daily sports (Live Hub call)
+
 # Simple 4-digit PIN gate for the Settings panel only — not real security
 # (it's a plain string check, visible to anyone reading this file), just a
 # casual barrier so Settings isn't editable by anyone who opens the app.
@@ -885,9 +894,9 @@ def find_top_bets(*dfs, n: int = 8, per_sport_cap: int = 3, hours: int = 48) -> 
     # sports (NBA/MLB/Tennis/NHL) — a single global lookahead window means
     # football games sitting 3-10 days out never even get considered, since
     # they're always outside a 24-48h cutoff. These two sports get a wider
-    # window so games actually become visible as they approach, instead of
+    # window (SPORT_WINDOW_HOURS_OVERRIDE, defined near the top constants)
+    # so games actually become visible as they approach, instead of
     # requiring the person to be checking at exactly the right moment.
-    SPORT_WINDOW_HOURS_OVERRIDE = {"NFL": 168, "NCAAF": 168}   # 7 days
     now_est    = datetime.now(_TZ_EASTERN)
 
     def _in_window(iso: str, window_hours: float) -> bool:
@@ -1257,13 +1266,27 @@ def filter_ledger_to_good_window(ledger: dict) -> dict:
     """
     good = {}
     for key, entry in ledger.items():
-        label, _ = bet_timing_status(entry.get("start_iso", ""))
+        label, _ = bet_timing_status(entry.get("start_iso", ""), entry.get("sport", ""))
         if label == "✅ Good window":
             good[key] = entry
     return good
 
 
-def bet_timing_status(start_iso: str) -> tuple[str, str]:
+def bet_timing_status(start_iso: str, sport: str = "") -> tuple[str, str]:
+    """
+    Labels how close a bet's start time is, scaled to that SPORT's own
+    lookahead window rather than one fixed set of hours for everyone. A
+    168-hour NFL/NCAAF window and a 24-hour daily-sport window each get a
+    "last stretch before kickoff" label sized to their own window, instead
+    of NFL/NCAAF spending nearly their entire multi-day qualifying period
+    stuck on "very early" under hour-cutoffs tuned for daily sports.
+
+    IMPORTANT: this describes odds freshness / timing stability only — how
+    likely the line is to have drifted since it was fetched. It is NOT a
+    win-probability signal, and no timing label can guarantee a bet wins or
+    protect against a loss. Betting always carries real loss risk regardless
+    of how fresh or stable the odds are.
+    """
     try:
         naive = datetime.strptime(str(start_iso).replace("Z", ""), "%Y-%m-%dT%H:%M:%S")
         start_dt = _TZ_UTC.localize(naive)
@@ -1275,9 +1298,14 @@ def bet_timing_status(start_iso: str) -> tuple[str, str]:
         return ("Started", "#64748b")
     if hours_out <= 0.5:
         return ("⚠️ Starting soon", "#ef4444")
-    if hours_out <= 6:
+
+    window = SPORT_WINDOW_HOURS_OVERRIDE.get(sport, DEFAULT_LOOKAHEAD_HOURS)
+    good_window_hi = max(6.0, window * 0.25)     # last quarter of the window (floor: 6h)
+    early_hi       = max(18.0, window * 0.75)    # next chunk (floor: 18h, matches old daily-sport behavior)
+
+    if hours_out <= good_window_hi:
         return ("✅ Good window", "#22c55e")
-    if hours_out <= 18:
+    if hours_out <= early_hi:
         return ("🕒 Early — line may move", "#f59e0b")
     return ("🕒 Very early — line may move a lot", "#f59e0b")
 
@@ -1845,7 +1873,7 @@ def main():
                 ev       = float(entry.get("ev") or 0)
                 edge     = float(entry.get("edge") or 0)
                 rank_color = "#00D9FF" if i == 0 else "#e2e8f0"
-                timing_label, timing_color = bet_timing_status(entry.get("start_iso", ""))
+                timing_label, timing_color = bet_timing_status(entry.get("start_iso", ""), entry.get("sport", ""))
                 st.markdown(
                     f"<div style='background:#111827;border:1px solid #1e3a5f;border-radius:10px;"
                     f"padding:12px 18px;margin-bottom:8px;display:flex;justify-content:space-between;"
