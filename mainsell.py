@@ -1274,18 +1274,26 @@ def filter_ledger_to_good_window(ledger: dict) -> dict:
 
 def bet_timing_status(start_iso: str, sport: str = "") -> tuple[str, str]:
     """
-    Labels how close a bet's start time is, scaled to that SPORT's own
-    lookahead window rather than one fixed set of hours for everyone. A
-    168-hour NFL/NCAAF window and a 24-hour daily-sport window each get a
-    "last stretch before kickoff" label sized to their own window, instead
-    of NFL/NCAAF spending nearly their entire multi-day qualifying period
-    stuck on "very early" under hour-cutoffs tuned for daily sports.
+    Labels how close a bet's start time is. Uses the SAME fixed hour bands
+    for every sport, deliberately — how much time an odds snapshot has had
+    to drift depends on the actual hours until kickoff, not on how far in
+    advance that sport's lookahead window happened to surface it. A football
+    game found 6 days out and a tennis match found 20 hours out are equally
+    "fresh" if they're both 3 hours from starting, and equally stale if
+    they're both 5 days out — the discovery window length is irrelevant to
+    that. (The `sport` param is accepted but unused now — kept so call sites
+    don't need to change if per-sport bands are ever reintroduced deliberately.)
 
-    IMPORTANT: this describes odds freshness / timing stability only — how
-    likely the line is to have drifted since it was fetched. It is NOT a
-    win-probability signal, and no timing label can guarantee a bet wins or
-    protect against a loss. Betting always carries real loss risk regardless
-    of how fresh or stable the odds are.
+    "Good window" (0.5-6h out) is meant to be the genuine sweet spot — close
+    enough that the odds are unlikely to have drifted, far enough that the
+    line has settled — and by design it's a MINORITY of any bet's lifetime
+    in the ledger, not a coin flip. Most checks on a bet that's still days
+    or many hours out should correctly show "early"/"very early".
+
+    IMPORTANT: this describes odds freshness / timing stability only. It is
+    NOT a win-probability signal, and no timing label can guarantee a bet
+    wins or protect against a loss. Betting always carries real loss risk
+    regardless of how fresh or stable the odds are.
     """
     try:
         naive = datetime.strptime(str(start_iso).replace("Z", ""), "%Y-%m-%dT%H:%M:%S")
@@ -1298,14 +1306,9 @@ def bet_timing_status(start_iso: str, sport: str = "") -> tuple[str, str]:
         return ("Started", "#64748b")
     if hours_out <= 0.5:
         return ("⚠️ Starting soon", "#ef4444")
-
-    window = SPORT_WINDOW_HOURS_OVERRIDE.get(sport, DEFAULT_LOOKAHEAD_HOURS)
-    good_window_hi = max(6.0, window * 0.50)     # last half of the window (floor: 6h)
-    early_hi       = max(18.0, window * 0.80)    # next chunk (floor: 18h)
-
-    if hours_out <= good_window_hi:
+    if hours_out <= 6:
         return ("✅ Good window", "#22c55e")
-    if hours_out <= early_hi:
+    if hours_out <= 18:
         return ("🕒 Early — line may move", "#f59e0b")
     return ("🕒 Very early — line may move a lot", "#f59e0b")
 
