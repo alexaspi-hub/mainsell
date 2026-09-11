@@ -1300,8 +1300,8 @@ def bet_timing_status(start_iso: str, sport: str = "") -> tuple[str, str]:
         return ("⚠️ Starting soon", "#ef4444")
 
     window = SPORT_WINDOW_HOURS_OVERRIDE.get(sport, DEFAULT_LOOKAHEAD_HOURS)
-    good_window_hi = max(6.0, window * 0.25)     # last quarter of the window (floor: 6h)
-    early_hi       = max(18.0, window * 0.75)    # next chunk (floor: 18h, matches old daily-sport behavior)
+    good_window_hi = max(6.0, window * 0.50)     # last half of the window (floor: 6h)
+    early_hi       = max(18.0, window * 0.80)    # next chunk (floor: 18h)
 
     if hours_out <= good_window_hi:
         return ("✅ Good window", "#22c55e")
