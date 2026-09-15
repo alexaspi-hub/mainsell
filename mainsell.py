@@ -1210,29 +1210,60 @@ def save_bet_ledger(ledger: dict) -> None:
         print(f"[save_bet_ledger] ERROR: {e}")
 
 def update_bet_ledger(qualifying_bets: list, all_known_keys: set) -> dict:
+    """
+    Keeps the "currently qualifying" ledger fresh across reruns.
+
+    Eviction has two triggers:
+    - the game has started (definite — always evict)
+    - the game has been missing from the broader odds feed for a SUSTAINED
+      period (VANISHED_GRACE_HOURS), not just the current fetch
+
+    Why the grace period: sportsbooks routinely suspend/pull a market for a
+    short stretch right before kickoff while the line settles — which is
+    exactly the pre-game window "Good window" is meant to catch — and
+    TheOddsAPI can also just miss an event on a single 15-minute fetch cycle
+    for unrelated reasons. The previous version evicted on the very FIRST
+    fetch where the event didn't appear, which meant a bet was often kicked
+    out of the ledger during precisely the hours it would otherwise have
+    entered "Good window" — so that label almost never actually showed.
+    Now an event has to be missing continuously for VANISHED_GRACE_HOURS
+    before it's treated as genuinely gone rather than a temporary feed gap.
+    """
+    VANISHED_GRACE_HOURS = 2.0
+
     ledger = load_bet_ledger()
     now_iso = datetime.now().isoformat()
+    now_utc = _TZ_UTC.localize(datetime.utcnow())
 
     for bet in qualifying_bets:
         key = bet.get("_event_id") or bet.get("Match", "")
         if not key:
             continue
         ledger[key] = {
-            "match":        bet.get("Match", ""),
-            "sport":        bet.get("_sport", ""),
-            "bet_team":     bet.get("Bet Team", ""),
-            "bet_odds":     bet.get("Bet Odds"),
-            "ev":           bet.get("EV+"),
-            "edge":         bet.get("Edge %"),
-            "stake":        bet.get("Stake (C$)"),
-            "start_iso":    bet.get("_start_iso", ""),
-            "date":         bet.get("_date", ""),
-            "time_str":     bet.get("Time/Score", ""),
-            "first_seen":   ledger.get(key, {}).get("first_seen", now_iso),
-            "last_updated": now_iso,
+            "match":             bet.get("Match", ""),
+            "sport":             bet.get("_sport", ""),
+            "bet_team":          bet.get("Bet Team", ""),
+            "bet_odds":          bet.get("Bet Odds"),
+            "ev":                bet.get("EV+"),
+            "edge":              bet.get("Edge %"),
+            "stake":             bet.get("Stake (C$)"),
+            "start_iso":         bet.get("_start_iso", ""),
+            "date":              bet.get("_date", ""),
+            "time_str":          bet.get("Time/Score", ""),
+            "first_seen":        ledger.get(key, {}).get("first_seen", now_iso),
+            "last_updated":      now_iso,
+            "last_seen_in_feed": now_iso,
         }
 
-    now_utc = _TZ_UTC.localize(datetime.utcnow())
+    # Decouple "still in the odds feed" from "currently qualifies" — a bet
+    # that's still happening but has temporarily dropped below the edge/EV
+    # cut shouldn't be treated as stale just because this loop only rewrites
+    # qualifying entries above. Refresh the staleness clock for ANY ledger
+    # entry whose event is still present in the overall feed.
+    for key in list(ledger.keys()):
+        if key in all_known_keys:
+            ledger[key]["last_seen_in_feed"] = now_iso
+
     for key in list(ledger.keys()):
         entry = ledger[key]
         start_iso = entry.get("start_iso", "")
@@ -1242,8 +1273,16 @@ def update_bet_ledger(qualifying_bets: list, all_known_keys: set) -> dict:
             started = _TZ_UTC.localize(naive) <= now_utc
         except Exception:
             pass
-        vanished = key not in all_known_keys
-        if started or vanished:
+
+        try:
+            last_seen_dt = datetime.fromisoformat(
+                entry.get("last_seen_in_feed", entry.get("first_seen", now_iso)))
+            missing_hours = (datetime.now() - last_seen_dt).total_seconds() / 3600
+        except Exception:
+            missing_hours = 0.0
+
+        vanished_sustained = (key not in all_known_keys) and (missing_hours > VANISHED_GRACE_HOURS)
+        if started or vanished_sustained:
             ledger.pop(key, None)
 
     save_bet_ledger(ledger)
