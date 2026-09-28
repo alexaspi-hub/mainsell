@@ -1,4 +1,4 @@
-import ssl, os, time, random, json, socket, urllib3, feedparser, sqlite3
+import ssl, os, time, random, json, socket, urllib3, feedparser, sqlite3, base64
 import requests
 import pandas as pd
 import streamlit as st
@@ -159,6 +159,26 @@ RISK_KEYWORDS = {
 }
 
 PAPER_TRADES_CSV = Path("paper_trades.csv")
+
+# =============================================================================
+# GITHUB PERSISTENCE CONFIG — read from Streamlit secrets
+# =============================================================================
+# In your app's Settings -> Secrets (or .streamlit/secrets.toml locally), set:
+#   GITHUB_TOKEN = "ghp_..."          # a token with repo (or contents) write access
+#   GITHUB_REPO  = "yourname/yourrepo"
+#   GITHUB_BRANCH = "main"            # optional, defaults to the repo's default branch
+#   GITHUB_TRADES_PATH = "paper_trades.csv"   # optional, path *within* the repo
+def _get_secret(key: str, default: str = "") -> str:
+    try:
+        return st.secrets.get(key, default)
+    except Exception:
+        return default
+
+GITHUB_TOKEN       = _get_secret("GITHUB_TOKEN")
+GITHUB_REPO        = _get_secret("GITHUB_REPO")          # "owner/repo"
+GITHUB_BRANCH      = _get_secret("GITHUB_BRANCH")         # "" -> let GitHub use the default branch
+GITHUB_TRADES_PATH = _get_secret("GITHUB_TRADES_PATH", "paper_trades.csv")
+GITHUB_API_BASE    = "https://api.github.com"
 BANKROLL_CONFIG  = Path("bankroll_settings.json")
 MODEL_CONFIG     = Path("model_settings.json")
 BET_LEDGER_PATH  = Path("qualified_bets_ledger.json")
@@ -996,10 +1016,126 @@ def find_underdog_bets(*dfs, min_odds: float = 2.5, max_picks: int = 2) -> list:
     return [dogs.iloc[i] for i in range(min(max_picks, len(dogs)))]
 
 # =============================================================================
+# GITHUB-BACKED PERSISTENCE — survives Streamlit Cloud's ephemeral disk
+# =============================================================================
+# Streamlit Community Cloud's filesystem resets on container sleep, redeploy,
+# or crash — so anything written only to local disk (paper_trades.csv) can
+# silently vanish. This pushes every save to a GitHub repo via the Contents
+# API and pulls from GitHub on load if the local file is missing, so trade
+# history survives a cold start instead of disappearing with no warning.
+#
+# Configure via Streamlit secrets (Settings → Secrets on Streamlit Cloud, or
+# .streamlit/secrets.toml locally):
+#
+#   [github]
+#   token  = "ghp_xxxxxxxxxxxxxxxxxxxx"   # PAT with repo (Contents) write access
+#   repo   = "yourusername/your-repo-name"
+#   branch = "main"                        # optional, defaults to "main"
+#   path   = "paper_trades.csv"            # optional, defaults to "paper_trades.csv"
+#
+# If secrets aren't configured, every function below returns a clear
+# (False, "not configured") result rather than crashing — local CSV
+# read/write keeps working on its own either way.
+
+def _github_config() -> dict | None:
+    try:
+        gh = st.secrets.get("github")
+    except Exception:
+        gh = None
+    if not gh or "token" not in gh or "repo" not in gh:
+        return None
+    return {
+        "token":  gh["token"],
+        "repo":   gh["repo"],
+        "branch": gh.get("branch", "main"),
+        "path":   gh.get("path", "paper_trades.csv"),
+    }
+
+
+def github_push_file(local_path: Path) -> tuple[bool, str]:
+    """
+    Pushes local_path's current bytes to the configured GitHub repo/path via
+    the Contents API (base64-encoded PUT, using the existing file's blob SHA
+    to update rather than create a duplicate). Returns (success, detail) —
+    detail is a real error (HTTP status + response body, or the exception
+    text) on failure, never swallowed into a bare True/False, so a bad token
+    or wrong repo path shows up as a readable message instead of a silent,
+    invisible failure.
+    """
+    cfg = _github_config()
+    if cfg is None:
+        return False, "GitHub not configured — add [github] token/repo to Streamlit secrets."
+    if not local_path.exists():
+        return False, f"Local file {local_path} does not exist — nothing to push."
+
+    try:
+        content_b64 = base64.b64encode(local_path.read_bytes()).decode("utf-8")
+        api_url = f"https://api.github.com/repos/{cfg['repo']}/contents/{cfg['path']}"
+        headers = {
+            "Authorization": f"Bearer {cfg['token']}",
+            "Accept":        "application/vnd.github+json",
+        }
+
+        # GitHub rejects a PUT to an existing file without its current blob
+        # SHA (it looks like an unrelated create, not an update) — so fetch
+        # it first. A 404 here just means the file doesn't exist yet, which
+        # is fine on first push; any other non-200 gets surfaced below.
+        get_resp = requests.get(api_url, headers=headers,
+                                 params={"ref": cfg["branch"]}, timeout=15)
+        sha = get_resp.json().get("sha") if get_resp.status_code == 200 else None
+
+        payload = {
+            "message": f"Update {cfg['path']} — {datetime.now().isoformat(timespec='seconds')}",
+            "content": content_b64,
+            "branch":  cfg["branch"],
+        }
+        if sha:
+            payload["sha"] = sha
+
+        put_resp = requests.put(api_url, headers=headers, json=payload, timeout=15)
+        if put_resp.status_code in (200, 201):
+            return True, "Pushed to GitHub."
+        return False, f"HTTP {put_resp.status_code}: {put_resp.text[:300]}"
+    except Exception as e:
+        return False, f"Exception during GitHub push: {e}"
+
+
+def github_pull_file(local_path: Path) -> tuple[bool, str]:
+    """
+    Pulls the configured file from GitHub and writes it to local_path.
+    Called on load when the local file is missing (fresh/cold container),
+    so trade history survives a Streamlit Cloud sleep/redeploy/crash instead
+    of quietly starting over from an empty CSV.
+    """
+    cfg = _github_config()
+    if cfg is None:
+        return False, "GitHub not configured — add [github] token/repo to Streamlit secrets."
+    try:
+        api_url = f"https://api.github.com/repos/{cfg['repo']}/contents/{cfg['path']}"
+        headers = {
+            "Authorization": f"Bearer {cfg['token']}",
+            "Accept":        "application/vnd.github+json",
+        }
+        resp = requests.get(api_url, headers=headers, params={"ref": cfg["branch"]}, timeout=15)
+        if resp.status_code != 200:
+            return False, f"HTTP {resp.status_code}: {resp.text[:300]}"
+        content_bytes = base64.b64decode(resp.json().get("content", ""))
+        local_path.write_bytes(content_bytes)
+        return True, "Pulled from GitHub."
+    except Exception as e:
+        return False, f"Exception during GitHub pull: {e}"
+
+
+# =============================================================================
 # PAPER TRADING
 # =============================================================================
 def load_paper_trades() -> list:
-    if not PAPER_TRADES_CSV.exists(): return []
+    if not PAPER_TRADES_CSV.exists():
+        ok, detail = github_pull_file(PAPER_TRADES_CSV)
+        st.session_state["_github_pull_result"] = {
+            "ok": ok, "detail": detail, "at": datetime.now().isoformat()}
+        if not ok:
+            return []
     try:
         df = pd.read_csv(PAPER_TRADES_CSV)
         for col in ["odds","ev_plus","stake","ai_prob","edge_pct","rainbet_mult"]:
@@ -1017,6 +1153,10 @@ def save_paper_trades(trades: list) -> None:
         pd.DataFrame(trades).to_csv(PAPER_TRADES_CSV, index=False)
     except Exception as e:
         print(f"[save_paper_trades] ERROR: {e}")
+        return
+    ok, detail = github_push_file(PAPER_TRADES_CSV)
+    st.session_state["_github_push_result"] = {
+        "ok": ok, "detail": detail, "at": datetime.now().isoformat()}
 
 def dedupe_pending_trades() -> int:
     """
@@ -2114,6 +2254,19 @@ def main():
                 else:
                     st.error("❌ Incorrect code.")
         else:
+            gh_push = st.session_state.get("_github_push_result")
+            gh_pull = st.session_state.get("_github_pull_result")
+            if gh_push is not None:
+                if gh_push["ok"]:
+                    st.success(f"✅ GitHub backup: {gh_push['detail']}")
+                else:
+                    st.error(f"❌ GitHub backup failed: {gh_push['detail']}")
+            if gh_pull is not None:
+                if gh_pull["ok"]:
+                    st.info(f"ℹ️ Loaded trade history from GitHub (local file was missing): {gh_pull['detail']}")
+                else:
+                    st.warning(f"⚠️ Local trade file missing and GitHub restore failed: {gh_pull['detail']}")
+
             with st.expander("✅ Grade Picks — enter real Rainbet results", expanded=True):
                 st.caption(
                     "Picks don't auto-settle. Pick the match, enter what actually "
