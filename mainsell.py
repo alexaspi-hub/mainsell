@@ -1058,9 +1058,12 @@ def github_push_file(local_path: Path) -> tuple[bool, str]:
     the Contents API (base64-encoded PUT, using the existing file's blob SHA
     to update rather than create a duplicate). Returns (success, detail) —
     detail is a real error (HTTP status + response body, or the exception
-    text) on failure, never swallowed into a bare True/False, so a bad token
-    or wrong repo path shows up as a readable message instead of a silent,
-    invisible failure.
+    text) on failure, never swallowed into a bare True/False.
+
+    Retries on HTTP 409/422: GitHub returns those when the branch (or the
+    file's SHA) moved between our read and our write — e.g. two saves close
+    together, two open sessions, or a commit landing at the same moment.
+    Re-fetching the latest SHA and trying again resolves it.
     """
     cfg = _github_config()
     if cfg is None:
@@ -1068,34 +1071,40 @@ def github_push_file(local_path: Path) -> tuple[bool, str]:
     if not local_path.exists():
         return False, f"Local file {local_path} does not exist — nothing to push."
 
+    api_url = f"https://api.github.com/repos/{cfg['repo']}/contents/{cfg['path']}"
+    headers = {
+        "Authorization": f"Bearer {cfg['token']}",
+        "Accept":        "application/vnd.github+json",
+    }
+    last_detail = "unknown error"
     try:
         content_b64 = base64.b64encode(local_path.read_bytes()).decode("utf-8")
-        api_url = f"https://api.github.com/repos/{cfg['repo']}/contents/{cfg['path']}"
-        headers = {
-            "Authorization": f"Bearer {cfg['token']}",
-            "Accept":        "application/vnd.github+json",
-        }
+        for attempt in range(1, 5):
+            # Fresh SHA every attempt. A 404 just means the file doesn't
+            # exist yet (first push) — that's fine, we create it.
+            get_resp = requests.get(api_url, headers=headers,
+                                     params={"ref": cfg["branch"]}, timeout=15)
+            sha = get_resp.json().get("sha") if get_resp.status_code == 200 else None
 
-        # GitHub rejects a PUT to an existing file without its current blob
-        # SHA (it looks like an unrelated create, not an update) — so fetch
-        # it first. A 404 here just means the file doesn't exist yet, which
-        # is fine on first push; any other non-200 gets surfaced below.
-        get_resp = requests.get(api_url, headers=headers,
-                                 params={"ref": cfg["branch"]}, timeout=15)
-        sha = get_resp.json().get("sha") if get_resp.status_code == 200 else None
+            payload = {
+                "message": f"Update {cfg['path']} — {datetime.now().isoformat(timespec='seconds')}",
+                "content": content_b64,
+                "branch":  cfg["branch"],
+            }
+            if sha:
+                payload["sha"] = sha
 
-        payload = {
-            "message": f"Update {cfg['path']} — {datetime.now().isoformat(timespec='seconds')}",
-            "content": content_b64,
-            "branch":  cfg["branch"],
-        }
-        if sha:
-            payload["sha"] = sha
+            put_resp = requests.put(api_url, headers=headers, json=payload, timeout=15)
+            if put_resp.status_code in (200, 201):
+                suffix = f" (succeeded on try {attempt})" if attempt > 1 else ""
+                return True, "Pushed to GitHub." + suffix
 
-        put_resp = requests.put(api_url, headers=headers, json=payload, timeout=15)
-        if put_resp.status_code in (200, 201):
-            return True, "Pushed to GitHub."
-        return False, f"HTTP {put_resp.status_code}: {put_resp.text[:300]}"
+            last_detail = f"HTTP {put_resp.status_code}: {put_resp.text[:300]}"
+            if put_resp.status_code in (409, 422):
+                time.sleep(attempt)      # brief backoff, then re-read SHA and retry
+                continue
+            break                        # auth/permission/path errors won't fix themselves
+        return False, last_detail
     except Exception as e:
         return False, f"Exception during GitHub push: {e}"
 
@@ -1117,6 +1126,9 @@ def github_pull_file(local_path: Path) -> tuple[bool, str]:
             "Accept":        "application/vnd.github+json",
         }
         resp = requests.get(api_url, headers=headers, params={"ref": cfg["branch"]}, timeout=15)
+        if resp.status_code == 404:
+            return False, ("not_found: no paper_trades.csv in the repo yet — normal on "
+                           "first run; it gets created on the first successful save.")
         if resp.status_code != 200:
             return False, f"HTTP {resp.status_code}: {resp.text[:300]}"
         content_bytes = base64.b64decode(resp.json().get("content", ""))
@@ -1157,6 +1169,8 @@ def save_paper_trades(trades: list) -> None:
     ok, detail = github_push_file(PAPER_TRADES_CSV)
     st.session_state["_github_push_result"] = {
         "ok": ok, "detail": detail, "at": datetime.now().isoformat()}
+    if ok:
+        st.session_state.pop("_github_pull_result", None)
 
 def dedupe_pending_trades() -> int:
     """
@@ -2264,6 +2278,8 @@ def main():
             if gh_pull is not None:
                 if gh_pull["ok"]:
                     st.info(f"ℹ️ Loaded trade history from GitHub (local file was missing): {gh_pull['detail']}")
+                elif str(gh_pull["detail"]).startswith("not_found"):
+                    st.info("ℹ️ No saved trade history in GitHub yet — starting fresh. It will be created on the first save.")
                 else:
                     st.warning(f"⚠️ Local trade file missing and GitHub restore failed: {gh_pull['detail']}")
 
