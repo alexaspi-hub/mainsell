@@ -1,0 +1,4 @@
+id,timestamp,match,bet_team,sport,odds,ev_plus,stake,ai_prob,edge_pct,rainbet_mult,strategy,status,result
+Xinyu Gao vs Panna Udvardy_234030,2026-09-28T23:40:30.154735,Xinyu Gao vs Panna Udvardy,Xinyu Gao,Tennis,2.61,0.1017,2.85,0.42211930164888456,3.9,2.61,High EV,PENDING,
+Adrian Mannarino vs Pablo Carreno Busta_234030,2026-09-28T23:40:30.154822,Adrian Mannarino vs Pablo Carreno Busta,Adrian Mannarino,Tennis,2.61,0.1017,2.85,0.42211930164888456,3.9,2.61,High EV,PENDING,
+Valentin Vacherot vs Alexander Blockx_234030,2026-09-28T23:40:30.154868,Valentin Vacherot vs Alexander Blockx,Valentin Vacherot,Tennis,2.27,0.0877,3.12,0.4791501775748351,3.86,2.27,High EV,PENDING,
