@@ -2,4 +2,5 @@ id,timestamp,match,bet_team,sport,odds,ev_plus,stake,ai_prob,edge_pct,rainbet_mu
 Xinyu Gao vs Panna Udvardy_234030,2026-09-28T23:40:30.154735,Xinyu Gao vs Panna Udvardy,Xinyu Gao,Tennis,2.61,0.1017,2.85,0.4221193016488845,3.9,2.61,High EV,PENDING,
 Adrian Mannarino vs Pablo Carreno Busta_234030,2026-09-28T23:40:30.154822,Adrian Mannarino vs Pablo Carreno Busta,Adrian Mannarino,Tennis,2.61,0.1017,2.85,0.4221193016488845,3.9,2.61,High EV,PENDING,
 Valentin Vacherot vs Alexander Blockx_234030,2026-09-28T23:40:30.154868,Valentin Vacherot vs Alexander Blockx,Valentin Vacherot,Tennis,2.27,0.0877,3.12,0.4791501775748351,3.86,2.27,High EV,PENDING,
-New York Liberty vs Minnesota Lynx_024322,2026-09-29T02:43:22.598660,New York Liberty vs Minnesota Lynx,New York Liberty,WNBA,2.334,0.0858,4.82,0.46519877675840976,3.67,2.334,High EV,PENDING,
+New York Liberty vs Minnesota Lynx_024322,2026-09-29T02:43:22.598660,New York Liberty vs Minnesota Lynx,New York Liberty,WNBA,2.334,0.0858,4.82,0.4651987767584097,3.67,2.334,High EV,PENDING,
+Alexander Bublik vs Jakub Mensik_032828,2026-09-29T03:28:28.156384,Alexander Bublik vs Jakub Mensik,Alexander Bublik,Tennis,2.49,0.09,2.85,0.4377466534457114,3.61,2.49,High EV,PENDING,
