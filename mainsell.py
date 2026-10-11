@@ -1,4 +1,4 @@
-import ssl, os, time, random, json, socket, urllib3, feedparser, sqlite3, base64
+import ssl, os, time, random, json, socket, urllib3, feedparser, sqlite3, base64, statistics
 import requests
 import pandas as pd
 import streamlit as st
@@ -516,6 +516,7 @@ def fetch_premium_odds(sport_key: str) -> pd.DataFrame:
                 time_str = "TBD"; ev_date = ""
 
             best_h = best_a = 0.0; book_count = 0; latest_update = ""
+            fair_list = []          # each book's own no-vig home probability
             blocked_market_hit = False
             for bk in (ev.get("books") or []):
                 mkt = (bk.get("market") or "").strip().lower()
@@ -528,11 +529,22 @@ def fetch_premium_odds(sport_key: str) -> pd.DataFrame:
                 upd = bk.get("updated_at", "")
                 if upd and upd > latest_update:
                     latest_update = upd
+                bk_h = bk_a = None
                 for outcome in (bk.get("outcomes") or []):
                     price = american_to_decimal(float(outcome.get("price", 0)))
                     name  = outcome.get("name", "")
-                    if name == home_raw and price > best_h: best_h = price
-                    elif name == away_raw and price > best_a: best_a = price
+                    if name == home_raw:
+                        bk_h = price
+                        if price > best_h: best_h = price
+                    elif name == away_raw:
+                        bk_a = price
+                        if price > best_a: best_a = price
+                # This book's own view of the game with ITS margin removed (its two prices
+                # normalised to sum to 1). The median of these across books is the consensus.
+                if bk_h and bk_a and bk_h > 1 and bk_a > 1:
+                    _ih, _ia = 1.0 / bk_h, 1.0 / bk_a
+                    if 0.95 <= (_ih + _ia) <= 1.20:
+                        fair_list.append(_ih / (_ih + _ia))
                 book_count += 1
 
             if book_count == 0: skipped_bk += 1
@@ -545,6 +557,9 @@ def fetch_premium_odds(sport_key: str) -> pd.DataFrame:
                 imp_sum = (1 / best_h) + (1 / best_a)
                 if not (0.90 <= imp_sum <= 1.25):
                     skipped_imp += 1; continue
+
+            raw_best_h, raw_best_a = best_h, best_a      # best price in the feed, before the haircut guess
+            fair_home = statistics.median(fair_list) if fair_list else None
 
             best_h = apply_rainbet_haircut(best_h)
             best_a = apply_rainbet_haircut(best_a)
@@ -559,6 +574,10 @@ def fetch_premium_odds(sport_key: str) -> pd.DataFrame:
                 "Home Odds":    round(best_h, 3) if best_h else 0.0,
                 "Away Odds":    round(best_a, 3) if best_a else 0.0,
                 "Books":        book_count,
+                "_raw_home":    round(raw_best_h, 3),
+                "_raw_away":    round(raw_best_a, 3),
+                "_fair_home":   round(fair_home, 4) if fair_home is not None else None,
+                "_fair_n":      len(fair_list),
                 "Time/Score":   time_str,
                 "Status":       "Scheduled",
                 "Risk Meter":   30,
@@ -996,6 +1015,64 @@ def find_top_bets(*dfs, n: int = 8, per_sport_cap: int = 3, hours: int = 48) -> 
     final    = combined.sort_values("Edge %", ascending=False)
     print(f"[DEBUG find_top_bets] returning top {min(n, len(final))} of {len(final)}")
     return [final.iloc[i] for i in range(min(n, len(final)))]
+
+
+PRICE_TARGET_REQUIRED_EDGE = 0.03   # expected profit per $1 a price must offer to count as worth taking
+PRICE_TARGET_MIN_BOOKS     = 3      # books needed before the consensus is trusted
+PRICE_TARGET_MIN_PROB      = 0.40   # skip long shots: the hardest bets to beat, and where margins are widest
+PRICE_TARGET_MAX_PROB      = 0.80   # skip near-locks: the payout is too small to matter
+
+def build_price_targets(*dfs, hours: int = 24, max_rows: int = 30) -> pd.DataFrame:
+    """
+    A calculator, not a recommender. For each upcoming game with enough books quoting it, take
+    each book's prices, strip that book's margin, and take the median across books as the
+    consensus ("fair") probability. From that, for BOTH sides of the game:
+
+      Fair Odds        = 1 / consensus probability
+      Min Rainbet Odds = the lowest Rainbet price that still gives +3% expected profit
+                         (price >= 1.03 / probability)
+
+    You compare the real Rainbet price to the target. At or above it = the price has value;
+    below it = skip. This replaces the old model, whose only 'edge' was a fixed home-team boost.
+    It cannot know about injuries, lineups or news, so a big gap versus the consensus is worth a
+    quick check that nothing has changed before betting.
+    """
+    now_est = datetime.now(_TZ_EASTERN)
+    out = []
+    for df in dfs:
+        if df is None or df.empty or "_fair_home" not in df.columns:
+            continue
+        for _, r in df.iterrows():
+            fh, n = r.get("_fair_home"), r.get("_fair_n", 0)
+            if fh is None or pd.isna(fh) or (n or 0) < PRICE_TARGET_MIN_BOOKS:
+                continue
+            sport  = r.get("_sport", "")
+            window = SPORT_WINDOW_HOURS_OVERRIDE.get(sport, hours)
+            try:
+                naive = datetime.strptime(str(r.get("_start_iso", "")).replace("Z", ""), "%Y-%m-%dT%H:%M:%S")
+                start_est = _TZ_UTC.localize(naive).astimezone(_TZ_EASTERN)
+            except Exception:
+                continue
+            hrs = (start_est - now_est).total_seconds() / 3600
+            if hrs < 0 or hrs > window:
+                continue
+            for team, p, best_raw in ((r.get("Home Team"), float(fh), r.get("_raw_home")),
+                                      (r.get("Away Team"), 1.0 - float(fh), r.get("_raw_away"))):
+                if not (PRICE_TARGET_MIN_PROB <= p <= PRICE_TARGET_MAX_PROB):
+                    continue
+                out.append({
+                    "Sport": sport, "Match": r.get("Match"),
+                    "Start": start_est.strftime("%a %I:%M %p ET"),
+                    "Pick": team, "Books": int(n),
+                    "Fair Odds": round(1.0 / p, 2),
+                    "Min Rainbet Odds": round((1.0 + PRICE_TARGET_REQUIRED_EDGE) / p, 2),
+                    "Best Feed Odds": round(float(best_raw), 2) if best_raw else None,
+                    "_hrs": hrs,
+                })
+    if not out:
+        return pd.DataFrame()
+    res = pd.DataFrame(out).sort_values(["_hrs", "Match"]).head(max_rows)
+    return res.drop(columns="_hrs").reset_index(drop=True)
 
 
 def find_underdog_bets(*dfs, min_odds: float = 2.5, max_picks: int = 2) -> list:
@@ -2085,9 +2162,22 @@ def main():
                     f"<div style='font-size:15px;font-weight:700;color:#a78bfa;'>C${stake:.2f}</div></span>"
                     f"</div></div>", unsafe_allow_html=True)
         else:
-            st.markdown("<div style='font-size:16px;color:#94a3b8;padding:12px 0;'>No qualifying bets in the next 24 hours.</div>",
+            st.markdown("<div style='font-size:16px;color:#94a3b8;padding:12px 0;'>No qualifying bets right now — the model no longer adds a home-team boost, so it only flags a bet when the market itself shows a gap. Use the Price Targets below.</div>",
                         unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
+
+        st.divider()
+        st.subheader("🎯 Price Targets — only bet if Rainbet pays at least this")
+        st.caption(
+            "Fair odds come from what the books collectively say (each book's margin removed, median taken). "
+            "'Min Rainbet Odds' is the price needed for +3% expected profit. Look up the game on Rainbet: "
+            "at or above the target = the price has value, below it = skip. This is a calculator, not a "
+            "recommendation, and it can't see injuries or news. Even a good price loses often.")
+        _targets = build_price_targets(df_nba, df_mlb, df_tennis, df_nhl, df_nfl, hours=24)
+        if _targets.empty:
+            st.info("No games in the next 24h with enough books quoting them.")
+        else:
+            _render_df(_targets, ["Sport","Match","Start","Pick","Books","Fair Odds","Min Rainbet Odds","Best Feed Odds"])
 
         st.divider()
         c1, c2, c3, c4, c5 = st.columns(5)
