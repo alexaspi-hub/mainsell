@@ -1075,6 +1075,49 @@ def build_price_targets(*dfs, hours: int = 24, max_rows: int = 30) -> pd.DataFra
     return res.drop(columns="_hrs").reset_index(drop=True)
 
 
+def price_target_funnel(frames: dict, hours: int = 24) -> pd.DataFrame:
+    """Shows, per sport, how many games survive each step of build_price_targets, so an empty
+    list can be traced to the exact step that removed everything."""
+    now_est = datetime.now(_TZ_EASTERN)
+    out = []
+    for sport, df in frames.items():
+        row = {"Sport": sport, "Games in feed": 0, "3+ books": 0, "Starts in window": 0,
+               "Fair odds 40-80%": 0, "Most books on one game": 0}
+        if df is None or df.empty:
+            out.append(row); continue
+        row["Games in feed"] = len(df)
+        if "_fair_n" not in df.columns:
+            row["3+ books"] = "old data - press Force Refresh"
+            out.append(row); continue
+        n = pd.to_numeric(df["_fair_n"], errors="coerce").fillna(0)
+        row["Most books on one game"] = int(n.max())
+        ok = df[n >= PRICE_TARGET_MIN_BOOKS]
+        row["3+ books"] = len(ok)
+        window = SPORT_WINDOW_HOURS_OVERRIDE.get(sport, hours)
+        in_win = []
+        for _, r in ok.iterrows():
+            try:
+                naive = datetime.strptime(str(r.get("_start_iso", "")).replace("Z", ""), "%Y-%m-%dT%H:%M:%S")
+                hrs = (_TZ_UTC.localize(naive).astimezone(_TZ_EASTERN) - now_est).total_seconds() / 3600
+            except Exception:
+                continue
+            if 0 <= hrs <= window:
+                in_win.append(r)
+        row["Starts in window"] = len(in_win)
+        cnt = 0
+        for r in in_win:
+            fh = r.get("_fair_home")
+            if fh is None or pd.isna(fh):
+                continue
+            fh = float(fh)
+            if (PRICE_TARGET_MIN_PROB <= fh <= PRICE_TARGET_MAX_PROB or
+                    PRICE_TARGET_MIN_PROB <= 1 - fh <= PRICE_TARGET_MAX_PROB):
+                cnt += 1
+        row["Fair odds 40-80%"] = cnt
+        out.append(row)
+    return pd.DataFrame(out).astype(str)
+
+
 def find_underdog_bets(*dfs, min_odds: float = 2.5, max_picks: int = 2) -> list:
     frames = [df for df in dfs if df is not None and not df.empty]
     if not frames: return []
@@ -2175,9 +2218,18 @@ def main():
             "recommendation, and it can't see injuries or news. Even a good price loses often.")
         _targets = build_price_targets(df_nba, df_mlb, df_tennis, df_nhl, df_nfl, hours=24)
         if _targets.empty:
-            st.info("No games in the next 24h with enough books quoting them.")
+            st.info("No price targets right now. The checklist below shows exactly where the games drop out.")
         else:
             _render_df(_targets, ["Sport","Match","Start","Pick","Books","Fair Odds","Min Rainbet Odds","Best Feed Odds"])
+        with st.expander("🔍 Why so few? Where games drop out", expanded=_targets.empty):
+            st.dataframe(price_target_funnel({"NBA/WNBA": df_nba, "MLB": df_mlb, "Tennis": df_tennis,
+                                              "NHL": df_nhl, "NFL": df_nfl}),
+                         hide_index=True, width="stretch")
+            st.caption(
+                "Reading left to right, a game must be in the feed, have 3+ books quoting it, start within "
+                "24h (NFL: 7 days), and have a side with a fair win chance between 40% and 80%. The first "
+                "column that drops to 0 is the reason. 'Most books on one game' shows how many books your "
+                "feed really returns. If it says 'old data', press 🔄 Force Refresh Data.")
 
         st.divider()
         c1, c2, c3, c4, c5 = st.columns(5)
