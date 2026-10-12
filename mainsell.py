@@ -1022,6 +1022,23 @@ PRICE_TARGET_MIN_BOOKS     = 3      # books needed before the consensus is trust
 PRICE_TARGET_MIN_PROB      = 0.40   # skip long shots: the hardest bets to beat, and where margins are widest
 PRICE_TARGET_MAX_PROB      = 0.80   # skip near-locks: the payout is too small to matter
 
+UNPROVEN_EDGE_STAKE_CAP_PCT = 0.01   # stakes capped at 1% of bankroll until the edge has a tracked record
+
+def check_rainbet_price(prob: float, rainbet_odds: float, bankroll: float, risk_level: str) -> dict:
+    """Given the consensus win probability and the price actually seen on Rainbet, work out the
+    expected profit per $1 and a cautious stake. Value only if it clears PRICE_TARGET_REQUIRED_EDGE."""
+    ev = prob * rainbet_odds - 1.0
+    b  = rainbet_odds - 1.0
+    stake = 0.0
+    if ev >= PRICE_TARGET_REQUIRED_EDGE and b > 0:
+        kelly = ev / b
+        frac  = KELLY_FRACTIONS.get(risk_level, 0.5)
+        pct   = min(kelly * frac, 0.05)
+        stake = min(pct * bankroll * CB_STAKE_MULTIPLIER, bankroll * UNPROVEN_EDGE_STAKE_CAP_PCT)
+    verdict = "value" if ev >= PRICE_TARGET_REQUIRED_EDGE else ("thin" if ev > 0 else "skip")
+    return {"ev": ev, "stake": round(stake, 2), "verdict": verdict}
+
+
 def build_price_targets(*dfs, hours: int = 24, max_rows: int = 30) -> pd.DataFrame:
     """
     A calculator, not a recommender. For each upcoming game with enough books quoting it, take
@@ -1067,11 +1084,14 @@ def build_price_targets(*dfs, hours: int = 24, max_rows: int = 30) -> pd.DataFra
                     "Fair Odds": round(1.0 / p, 2),
                     "Min Rainbet Odds": round((1.0 + PRICE_TARGET_REQUIRED_EDGE) / p, 2),
                     "Best Feed Odds": round(float(best_raw), 2) if best_raw else None,
+                    "_prob": p,
+                    "_ratio": (float(best_raw) / ((1.0 + PRICE_TARGET_REQUIRED_EDGE) / p)) if best_raw else 0.0,
+                    "_key": f"{sport}|{r.get('Match')}|{team}",
                     "_hrs": hrs,
                 })
     if not out:
         return pd.DataFrame()
-    res = pd.DataFrame(out).sort_values(["_hrs", "Match"]).head(max_rows)
+    res = pd.DataFrame(out).sort_values(["_hrs", "Match"]).drop_duplicates(subset="_key").head(max_rows)
     return res.drop(columns="_hrs").reset_index(drop=True)
 
 
@@ -2172,6 +2192,10 @@ def main():
                 f"</div>", unsafe_allow_html=True)
 
         top8 = ledger_entries[:4]
+        _targets_all = build_price_targets(df_nba, df_mlb, df_tennis, df_nhl, df_nfl, hours=24, max_rows=500)
+        # Closest to value = the book whose best price comes nearest to (or above) the target price
+        _top4 = (_targets_all.sort_values("_ratio", ascending=False).head(4)
+                 if not _targets_all.empty else _targets_all)
 
         st.markdown("<div class='metric-box'><div class='metric-title'>🏆 Top 4 Bets — Next 24 Hours</div>",
                     unsafe_allow_html=True)
@@ -2205,8 +2229,53 @@ def main():
                     f"<div style='font-size:15px;font-weight:700;color:#a78bfa;'>C${stake:.2f}</div></span>"
                     f"</div></div>", unsafe_allow_html=True)
         else:
-            st.markdown("<div style='font-size:16px;color:#94a3b8;padding:12px 0;'>No qualifying bets right now — the model no longer adds a home-team boost, so it only flags a bet when the market itself shows a gap. Use the Price Targets below.</div>",
-                        unsafe_allow_html=True)
+            from html import escape as _esc
+            st.markdown(
+                "<div style='font-size:14px;color:#94a3b8;padding:4px 0 10px;'>The model flags no bets on its own, "
+                "because without a price to compare it has no edge. These are the 4 games where the books' best "
+                "price comes closest to the fair price. <b>Type the price you see on Rainbet</b>: a game only "
+                "becomes a bet if your price clears the target.</div>", unsafe_allow_html=True)
+            if _top4.empty:
+                st.markdown("<div style='font-size:16px;color:#94a3b8;padding:12px 0;'>No games in the next 24 hours "
+                            "with enough books quoting them.</div>", unsafe_allow_html=True)
+            for _n, (_ix, _t) in enumerate(_top4.iterrows(), start=1):
+                _best_s = f"{float(_t['Best Feed Odds']):.2f}x" if _t.get("Best Feed Odds") else "—"
+                _lbl = "font-size:10px;color:#64748b;text-transform:uppercase;"
+                st.markdown(
+                    f"<div style='background:#111827;border:1px solid #1e3a5f;border-radius:10px;"
+                    f"padding:12px 18px;margin-bottom:4px;display:flex;justify-content:space-between;"
+                    f"align-items:center;flex-wrap:wrap;gap:8px;'>"
+                    f"<div><span style='font-size:11px;color:#64748b;font-weight:700;'>#{_n} &nbsp;·&nbsp; "
+                    f"{_esc(str(_t['Sport']))} &nbsp;·&nbsp; {_esc(str(_t['Start']))} &nbsp;·&nbsp; {int(_t['Books'])} books</span><br>"
+                    f"<span style='font-size:16px;font-weight:800;color:{'#00D9FF' if _n == 1 else '#e2e8f0'};'>{_esc(str(_t['Pick']))}</span>"
+                    f"<span style='font-size:13px;color:#94a3b8;'> &nbsp;·&nbsp; {_esc(str(_t['Match']))}</span></div>"
+                    f"<div style='display:flex;gap:16px;flex-wrap:wrap;'>"
+                    f"<span style='text-align:center;'><div style='{_lbl}'>Fair</div>"
+                    f"<div style='font-size:15px;font-weight:700;color:#e2e8f0;'>{float(_t['Fair Odds']):.2f}x</div></span>"
+                    f"<span style='text-align:center;'><div style='{_lbl}'>Need on Rainbet</div>"
+                    f"<div style='font-size:15px;font-weight:700;color:#00D9FF;'>{float(_t['Min Rainbet Odds']):.2f}x</div></span>"
+                    f"<span style='text-align:center;'><div style='{_lbl}'>Best book</div>"
+                    f"<div style='font-size:15px;font-weight:700;color:#a78bfa;'>{_best_s}</div></span>"
+                    f"</div></div>", unsafe_allow_html=True)
+                _rb = st.number_input(f"Rainbet price for {_t['Pick']} (decimal, e.g. 1.95)",
+                                      min_value=0.0, max_value=50.0, value=0.0, step=0.01,
+                                      format="%.2f", key=f"rb_{_t['_key']}")
+                if _rb > 1.0:
+                    _res = check_rainbet_price(float(_t["_prob"]), _rb, bankroll, risk_level)
+                    if _res["ev"] > 0.25:
+                        st.warning(f"⚠️ {_rb:.2f} is far above the market ({_res['ev']*100:+.0f}% expected profit). "
+                                   "That usually means a typo, a stale line, or news the market has priced in "
+                                   "(injury, lineup). Double-check before betting.")
+                    elif _res["verdict"] == "value":
+                        st.success(f"✅ Value: {_res['ev']*100:+.1f}% expected profit at {_rb:.2f}. "
+                                   f"Suggested stake C${_res['stake']:.2f}.")
+                    elif _res["verdict"] == "thin":
+                        st.info(f"Slightly positive ({_res['ev']*100:+.1f}%) but under the +3% target. Skip.")
+                    else:
+                        st.error(f"❌ Skip: {_rb:.2f} is below the fair price ({float(_t['Fair Odds']):.2f}).")
+            st.caption("Stake = fractional Kelly on the consensus probability, capped at 1% of bankroll while the edge "
+                       "has no tracked record. A good price still loses often, and the consensus can't see injuries or "
+                       "lineup news, so check nothing has changed before betting.")
         st.markdown("</div>", unsafe_allow_html=True)
 
         st.divider()
@@ -2216,7 +2285,7 @@ def main():
             "'Min Rainbet Odds' is the price needed for +3% expected profit. Look up the game on Rainbet: "
             "at or above the target = the price has value, below it = skip. This is a calculator, not a "
             "recommendation, and it can't see injuries or news. Even a good price loses often.")
-        _targets = build_price_targets(df_nba, df_mlb, df_tennis, df_nhl, df_nfl, hours=24)
+        _targets = _targets_all.head(30)
         if _targets.empty:
             st.info("No price targets right now. The checklist below shows exactly where the games drop out.")
         else:
