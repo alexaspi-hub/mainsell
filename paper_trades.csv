@@ -1,1 +1,4 @@
-
+id,timestamp,match,bet_team,sport,odds,ev_plus,stake,ai_prob,edge_pct,rainbet_mult,strategy,status,result
+Daria Yesypchuk vs Carole Monnet_203654,2026-10-12T20:36:54.956793,Daria Yesypchuk vs Carole Monnet,Daria Yesypchuk,Tennis,2.656,0.0994,3.25,0.4139186579773111,3.74,2.656,High EV,PENDING,
+Lucie Nguyen Tan vs Eva Bennemann_203654,2026-10-12T20:36:54.956914,Lucie Nguyen Tan vs Eva Bennemann,Lucie Nguyen Tan,Tennis,2.73,0.1014,3.17,0.40344868735083533,3.71,2.73,High EV,PENDING,
+Old Dominion Monarchs vs Georgia Southern Eagles_203654,2026-10-12T20:36:54.956979,Old Dominion Monarchs vs Georgia Southern Eagles,Old Dominion Monarchs,NCAAF,2.426,0.0833,2.85,0.4465224479558565,3.43,2.426,High EV,PENDING,
