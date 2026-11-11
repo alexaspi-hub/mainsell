@@ -25,7 +25,7 @@ socket.getaddrinfo = _ipv4_only
 # API KEYS
 # =============================================================================
 ODDS_API_KEY  = "toa_live_qz8p0rcs"
-ODDS_API_BASE = "https://api.theoddsapi.com"
+ODDS_API_BASE = "https://api.bettingdataapi.com"
 # =============================================================================
 
 st.set_page_config(
