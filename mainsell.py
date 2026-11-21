@@ -186,7 +186,7 @@ FLOOR_EXCEPTION_LOG_PATH = Path("floor_exception_log.json")
 
 AUTO_REFRESH_INTERVAL_SEC = 900
 
-# Shared per-sport lookahead window, in hours. NFL/NCAAF are scheduled far in
+# Shared per-sport lookahead window, in hours. NFL games are scheduled far in
 # advance so they need a much wider window than daily sports — used both to
 # decide which games qualify (find_top_bets) and to scale the "how close is
 # this bet's start time" labels (bet_timing_status) so a 7-day football
@@ -905,10 +905,10 @@ def find_best_bet(*dfs) -> pd.Series | None:
 
 def find_top_bets(*dfs, n: int = 8, per_sport_cap: int = 3, hours: int = 48) -> list:
     SPORT_CAPS = {"MLB": 2, "NBA": per_sport_cap, "Tennis": per_sport_cap}
-    # NFL and NCAAF games are scheduled much further in advance than daily
-    # sports (NBA/MLB/Tennis/NHL) — a single global lookahead window means
+    # NFL games are scheduled much further in advance than daily
+    # sports (NBA/MLB/Tennis) — a single global lookahead window means
     # football games sitting 3-10 days out never even get considered, since
-    # they're always outside a 24-48h cutoff. These two sports get a wider
+    # they're always outside a 24-48h cutoff. NFL gets a wider
     # window (SPORT_WINDOW_HOURS_OVERRIDE, defined near the top constants)
     # so games actually become visible as they approach, instead of
     # requiring the person to be checking at exactly the right moment.
