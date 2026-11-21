@@ -2,3 +2,4 @@ id,timestamp,match,bet_team,sport,odds,ev_plus,stake,ai_prob,edge_pct,rainbet_mu
 Philadelphia Eagles vs Pittsburgh Steelers_054837,2026-11-21T05:48:37.580881,Philadelphia Eagles vs Pittsburgh Steelers,Philadelphia Eagles,NFL,2.61,0.0717,2.29,0.4106075453209211,2.75,2.61,High EV,PENDING,
 Minnesota Timberwolves vs Memphis Grizzlies_054837,2026-11-21T05:48:37.580941,Minnesota Timberwolves vs Memphis Grizzlies,Minnesota Timberwolves,NBA,1.46,0.0354,8.01,0.7092071119654013,2.43,1.46,Value,PENDING,
 New York Knicks vs Portland Trail Blazers_054837,2026-11-21T05:48:37.580983,New York Knicks vs Portland Trail Blazers,New York Knicks,NBA,1.472,0.0354,7.81,0.7034108527131784,2.41,1.472,Value,PENDING,
+Dallas Mavericks vs LA Clippers_070036,2026-11-21T07:00:36.837637,Dallas Mavericks vs LA Clippers,Dallas Mavericks,NBA,1.474,0.0364,7.69,0.7030992736077482,2.47,1.474,Value,PENDING,
