@@ -192,7 +192,7 @@ AUTO_REFRESH_INTERVAL_SEC = 900
 # this bet's start time" labels (bet_timing_status) so a 7-day football
 # window and a 24h tennis window each get a sensible "getting close" label
 # instead of one fixed set of hours for every sport.
-SPORT_WINDOW_HOURS_OVERRIDE = {"NFL": 168, "NCAAF": 168}   # 7 days
+SPORT_WINDOW_HOURS_OVERRIDE = {"NFL": 168}   # 7 days
 DEFAULT_LOOKAHEAD_HOURS     = 24                            # daily sports (Live Hub call)
 
 # Simple 4-digit PIN gate for the Settings panel only — not real security
@@ -457,18 +457,14 @@ def fetch_premium_odds(sport_key: str) -> pd.DataFrame:
         "basketball_wnba": "basketball_wnba",
         "baseball_mlb":    "baseball_mlb",
         "tennis":          "tennis",
-        "icehockey_nhl":       "icehockey_nhl",
         "americanfootball_nfl":  "americanfootball_nfl",
-        "americanfootball_ncaaf": "americanfootball_ncaaf",
     }
     sport_label = {
         "basketball_nba":  "NBA",
         "basketball_wnba": "WNBA",
         "baseball_mlb":    "MLB",
         "tennis":          "Tennis",
-        "icehockey_nhl":       "NHL",
         "americanfootball_nfl":  "NFL",
-        "americanfootball_ncaaf": "NCAAF",
     }.get(sport_key, sport_key.upper())
 
     api_sport = _sport_map.get(sport_key, sport_key)
@@ -595,7 +591,7 @@ def calculate_real_ev(df: pd.DataFrame, model_cfg: dict, sport: str = "NBA") -> 
     injury_pen = float(model_cfg.get("injury_penalty_pct", 5.0)) / 100
 
     home_boost = {"NBA": 0.060, "MLB": 0.035, "Tennis": 0.055,
-                  "NHL": 0.045, "NFL": 0.050, "NCAAF": 0.055}.get(sport, 0.060)
+                  "NFL": 0.050}.get(sport, 0.060)
 
     h_col = "Home Odds" if "Home Odds" in df.columns else "P1 Odds"
     a_col = "Away Odds" if "Away Odds" in df.columns else "P2 Odds"
@@ -826,8 +822,7 @@ def build_advance_predictions(days_ahead: int, sport: str,
     else:
         sport_key_map = {
             "NBA": "basketball_nba", "MLB": "baseball_mlb",
-            "NHL": "icehockey_nhl", "NFL": "americanfootball_nfl",
-            "NCAAF": "americanfootball_ncaaf",
+            "NFL": "americanfootball_nfl",
         }
         sport_key = sport_key_map.get(sport, "basketball_nba")
         combined  = fetch_premium_odds(sport_key)
@@ -1904,7 +1899,7 @@ def main():
                     "kelly_fraction": risk_level,
                 })
                 st.cache_data.clear()
-                for key in ["data_nba","data_mlb","data_tennis","data_wnba","data_nhl","data_nfl","data_ncaaf","data_fetched_at"]:
+                for key in ["data_nba","data_mlb","data_tennis","data_wnba","data_nfl","data_fetched_at"]:
                     st.session_state.pop(key, None)
                 st.success("✅ Saved.")
                 st.rerun()
@@ -1917,11 +1912,11 @@ def main():
     col_t, col_l = st.columns([4,1])
     with col_t:
         st.markdown("<h1 style='margin:0'>📈 Sports EV+ Dashboard</h1>", unsafe_allow_html=True)
-        st.caption("NBA/WNBA · MLB · Tennis · NHL · NFL · NCAAF")
+        st.caption("NBA/WNBA · MLB · Tennis · NFL")
     with col_l:
         if st.button("🔄 Force Refresh Data", width="stretch"):
             st.cache_data.clear()
-            for key in ["data_nba","data_mlb","data_tennis","data_wnba","data_nhl","data_nfl","data_ncaaf","data_fetched_at"]:
+            for key in ["data_nba","data_mlb","data_tennis","data_wnba","data_nfl","data_fetched_at"]:
                 st.session_state.pop(key, None)
             st.rerun()
 
@@ -1940,13 +1935,11 @@ def main():
             nba_hl    = fetch_rss_headlines(["https://www.espn.com/espn/rss/nba/news"])
             mlb_hl    = fetch_rss_headlines(["https://www.espn.com/espn/rss/mlb/news"])
             tennis_hl = fetch_rss_headlines(["https://www.espn.com/espn/rss/tennis/news"])
-            nhl_hl    = fetch_rss_headlines(["https://www.espn.com/espn/rss/nhl/news"])
             nfl_hl    = fetch_rss_headlines(["https://www.espn.com/espn/rss/nfl/news"])
-            ncaaf_hl  = fetch_rss_headlines(["https://www.espn.com/espn/rss/ncf/news"])
-            all_hl    = nba_hl + mlb_hl + tennis_hl + nhl_hl + nfl_hl + ncaaf_hl
+            all_hl    = nba_hl + mlb_hl + tennis_hl + nfl_hl
             flagged_hl = flagged_injury_headlines(all_hl)
             st.session_state["_nba_hl"], st.session_state["_mlb_hl"], st.session_state["_tennis_hl"] = nba_hl, mlb_hl, tennis_hl
-            st.session_state["_nhl_hl"], st.session_state["_nfl_hl"], st.session_state["_ncaaf_hl"] = nhl_hl, nfl_hl, ncaaf_hl
+            st.session_state["_nfl_hl"] = nfl_hl
 
             prog.progress(10, text="🏀 Fetching NBA…")
             df_nba_raw = apply_injury_flags(fetch_premium_odds("basketball_nba"), flagged_hl, sport="NBA")
@@ -1976,20 +1969,10 @@ def main():
             st.session_state["data_tennis"] = calculate_stakes(
                 calculate_real_ev(df_tennis_raw, model_cfg, "Tennis"), bankroll, risk_level, max_stake_cap=max_stake_cap)
 
-            prog.progress(65, text="🏒 Fetching NHL…")
-            df_nhl_raw = apply_injury_flags(fetch_premium_odds("icehockey_nhl"), flagged_hl, sport="NHL")
-            st.session_state["data_nhl"] = calculate_stakes(
-                calculate_real_ev(df_nhl_raw, model_cfg, "NHL"), bankroll, risk_level, max_stake_cap=max_stake_cap)
-
             prog.progress(80, text="🏈 Fetching NFL…")
             df_nfl_raw = apply_injury_flags(fetch_premium_odds("americanfootball_nfl"), flagged_hl, sport="NFL")
             st.session_state["data_nfl"] = calculate_stakes(
                 calculate_real_ev(df_nfl_raw, model_cfg, "NFL"), bankroll, risk_level, max_stake_cap=max_stake_cap)
-
-            prog.progress(90, text="🏈 Fetching NCAAF…")
-            df_ncaaf_raw = apply_injury_flags(fetch_premium_odds("americanfootball_ncaaf"), flagged_hl, sport="NCAAF")
-            st.session_state["data_ncaaf"] = calculate_stakes(
-                calculate_real_ev(df_ncaaf_raw, model_cfg, "NCAAF"), bankroll, risk_level, max_stake_cap=max_stake_cap)
 
             st.session_state["data_fetched_at"] = datetime.now()
             prog.progress(100, text="✅ Done!"); prog.empty()
@@ -2004,14 +1987,12 @@ def main():
     df_nba    = _filter_past_games(st.session_state.get("data_nba",    pd.DataFrame()))
     df_mlb    = _filter_past_games(st.session_state.get("data_mlb",    pd.DataFrame()))
     df_tennis = _filter_past_games(st.session_state.get("data_tennis", pd.DataFrame()))
-    df_nhl    = _filter_past_games(st.session_state.get("data_nhl",    pd.DataFrame()))
     df_nfl    = _filter_past_games(st.session_state.get("data_nfl",    pd.DataFrame()))
-    df_ncaaf  = _filter_past_games(st.session_state.get("data_ncaaf",  pd.DataFrame()))
 
     # Auto paper trade
-    if not df_nba.empty or not df_mlb.empty or not df_tennis.empty or not df_nhl.empty or not df_nfl.empty or not df_ncaaf.empty:
+    if not df_nba.empty or not df_mlb.empty or not df_tennis.empty or not df_nfl.empty:
         if (datetime.now() - st.session_state.last_paper_trade).total_seconds() >= PAPER_TRADE_INTERVAL:
-            _ok, _msg = execute_paper_trade(df_nba, df_mlb, df_tennis, df_nhl, df_nfl, df_ncaaf)
+            _ok, _msg = execute_paper_trade(df_nba, df_mlb, df_tennis, df_nfl)
             st.session_state.last_paper_trade = datetime.now()
 
     # Auto-dedupe: run once per app session (not every rerun) to clean up any
@@ -2023,18 +2004,18 @@ def main():
         st.session_state["_auto_deduped_this_session"] = True
 
     # ── TABS ──────────────────────────────────────────────────────────────────
-    tabs = st.tabs(["🏆 Live Hub","🏀 NBA","⚾ MLB","🎾 Tennis","🏒 NHL","🏈 NFL","🏈 NCAAF","📊 Tracking"])
+    tabs = st.tabs(["🏆 Live Hub","🏀 NBA","⚾ MLB","🎾 Tennis","🏈 NFL","📊 Tracking"])
 
     # ── TAB 0: Live Hub ───────────────────────────────────────────────────────
     with tabs[0]:
         all_known_keys = set()
-        for _df in [df_nba, df_mlb, df_tennis, df_nhl, df_nfl, df_ncaaf]:
+        for _df in [df_nba, df_mlb, df_tennis, df_nfl]:
             if _df is not None and not _df.empty:
                 for _, _r in _df.iterrows():
                     _k = _r.get("_event_id") or _r.get("Match", "")
                     if _k: all_known_keys.add(_k)
 
-        qualifying_now = find_top_bets(df_nba, df_mlb, df_tennis, df_nhl, df_nfl, df_ncaaf, n=50, per_sport_cap=50, hours=24)
+        qualifying_now = find_top_bets(df_nba, df_mlb, df_tennis, df_nfl, n=50, per_sport_cap=50, hours=24)
         ledger = update_bet_ledger(qualifying_now, all_known_keys)
         # Show all currently-qualifying bets regardless of timing state (early,
         # good window, or starting soon) — update_bet_ledger already handles
@@ -2095,7 +2076,7 @@ def main():
         st.markdown("</div>", unsafe_allow_html=True)
 
         st.divider()
-        c1, c2, c3, c4, c5, c6 = st.columns(6)
+        c1, c2, c3, c4 = st.columns(4)
         with c1:
             st.subheader("🏀 NBA Upcoming")
             if not df_nba.empty:
@@ -2115,33 +2096,18 @@ def main():
             else:
                 st.info("No tennis matches today.")
         with c4:
-            st.subheader("🏒 NHL Upcoming")
-            if not df_nhl.empty:
-                _render_df(df_nhl, ["Match","_date","Time/Score","Home Odds","Away Odds","EV+","Stake (C$)","Line Velocity"])
-            else:
-                st.info("No NHL games found. Press 🔄 Refresh.")
-        with c5:
             st.subheader("🏈 NFL Upcoming")
             if not df_nfl.empty:
                 _render_df(df_nfl, ["Match","_date","Time/Score","Home Odds","Away Odds","EV+","Stake (C$)","Line Velocity"])
             else:
                 st.info("No NFL games found. Press 🔄 Refresh.")
-        with c6:
-            st.subheader("🏈 NCAAF Upcoming")
-            if not df_ncaaf.empty:
-                _render_df(df_ncaaf, ["Match","_date","Time/Score","Home Odds","Away Odds","EV+","Stake (C$)","Line Velocity"])
-            else:
-                st.info("No NCAAF games found. Press 🔄 Refresh.")
-
         st.divider()
         st.subheader("📰 Injury & News Alerts")
         nba_hl    = st.session_state.get("_nba_hl", [])
         mlb_hl    = st.session_state.get("_mlb_hl", [])
         tennis_hl = st.session_state.get("_tennis_hl", [])
-        nhl_hl    = st.session_state.get("_nhl_hl", [])
         nfl_hl    = st.session_state.get("_nfl_hl", [])
-        ncaaf_hl  = st.session_state.get("_ncaaf_hl", [])
-        all_hl    = nba_hl + mlb_hl + tennis_hl + nhl_hl + nfl_hl + ncaaf_hl
+        all_hl    = nba_hl + mlb_hl + tennis_hl + nfl_hl
         alerts    = [h for h in all_hl if detect_injury_alert(h)]
         st.caption("These headlines also feed the model's Risk Meter — a heuristic keyword match, not a real injury-report feed.")
         for a in alerts[:6]: st.warning(f"⚠️ {a}")
@@ -2200,26 +2166,8 @@ def main():
         else:
             st.error("🎾 No tennis matches returned. Key may not support tennis on this plan.")
 
-    # ── TAB 4: NHL ────────────────────────────────────────────────────────────
+    # ── TAB 4: NFL ────────────────────────────────────────────────────────────
     with tabs[4]:
-        st.header("🏒 NHL — Upcoming Games")
-        if not df_nhl.empty:
-            _render_df(df_nhl, ["Match","Time/Score","_date","Home Odds","Away Odds",
-                                 "AI Prob %","Edge %","EV+","Stake (C$)","Books","Line Velocity"])
-            c1,c2,c3,c4 = st.columns(4)
-            ev_v = pd.to_numeric(df_nhl.get("EV+"), errors="coerce").dropna()
-            c1.metric("Games",           len(df_nhl))
-            c2.metric("Avg EV+",         f"{ev_v.mean():.4f}" if not ev_v.empty else "—")
-            c3.metric("Qualifying Bets", int((ev_v > MIN_EV_THRESHOLD).sum()))
-            stk = pd.to_numeric(df_nhl.get("Stake (C$)"), errors="coerce").fillna(0)
-            c4.metric("Total Stake C$",  f"{stk.sum():,.2f}")
-            if "_simultaneous_trades" in df_nhl.columns:
-                st.caption(f"🛡️ Covariance Shield: {df_nhl['_simultaneous_trades'].iloc[0]} simultaneous trades — stakes auto-scaled")
-        else:
-            st.info("🏒 No upcoming NHL games found. Try Refresh.")
-
-    # ── TAB 5: NFL ────────────────────────────────────────────────────────────
-    with tabs[5]:
         st.header("🏈 NFL — Upcoming Games")
         if not df_nfl.empty:
             _render_df(df_nfl, ["Match","Time/Score","_date","Home Odds","Away Odds",
@@ -2236,26 +2184,8 @@ def main():
         else:
             st.info("🏈 No upcoming NFL games found. Try Refresh.")
 
-    # ── TAB 6: NCAAF ──────────────────────────────────────────────────────────
-    with tabs[6]:
-        st.header("🏈 NCAAF — Upcoming Games")
-        if not df_ncaaf.empty:
-            _render_df(df_ncaaf, ["Match","Time/Score","_date","Home Odds","Away Odds",
-                                   "AI Prob %","Edge %","EV+","Stake (C$)","Books","Line Velocity"])
-            c1,c2,c3,c4 = st.columns(4)
-            ev_v = pd.to_numeric(df_ncaaf.get("EV+"), errors="coerce").dropna()
-            c1.metric("Games",           len(df_ncaaf))
-            c2.metric("Avg EV+",         f"{ev_v.mean():.4f}" if not ev_v.empty else "—")
-            c3.metric("Qualifying Bets", int((ev_v > MIN_EV_THRESHOLD).sum()))
-            stk = pd.to_numeric(df_ncaaf.get("Stake (C$)"), errors="coerce").fillna(0)
-            c4.metric("Total Stake C$",  f"{stk.sum():,.2f}")
-            if "_simultaneous_trades" in df_ncaaf.columns:
-                st.caption(f"🛡️ Covariance Shield: {df_ncaaf['_simultaneous_trades'].iloc[0]} simultaneous trades — stakes auto-scaled")
-        else:
-            st.info("🏈 No upcoming NCAAF games found. Try Refresh.")
-
-    # ── TAB 7: Tracking ───────────────────────────────────────────────────────
-    with tabs[7]:
+    # ── TAB 5: Tracking ───────────────────────────────────────────────────────
+    with tabs[5]:
         st.header("📊 Tracking")
         st.caption("Every bet the app has logged, plus manual grading and a backtest summary from graded results.")
 
